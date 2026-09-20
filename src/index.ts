@@ -23,6 +23,8 @@ const nitradoClient = new NitradoReadOnlyClient({
   backoffMaxMs: config.NITRADO_BACKOFF_MAX_MS,
   discoveryMaxDepth: config.NITRADO_DISCOVERY_MAX_DEPTH,
   discoveryMaxEntries: config.NITRADO_DISCOVERY_MAX_ENTRIES,
+  maxDownloadBytes: config.NITRADO_MAX_DOWNLOAD_BYTES,
+  downloadHostAllowlist: config.NITRADO_DOWNLOAD_HOSTS.split(",").map((host) => host.trim()).filter(Boolean),
   ...(config.NITRADO_LOG_DIRECTORY ? { logDirectory: config.NITRADO_LOG_DIRECTORY } : {}),
 });
 const ingestor = new AdmIngestor(storage, logger);
@@ -34,19 +36,21 @@ const nitradoPoller = new NitradoAdmPoller(
   config.NITRADO_POLL_INTERVAL_MS
 );
 const shutdown = new AbortController();
+let pollerTask: Promise<void> | undefined;
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],
 });
 
 client.once(Events.ClientReady, (readyClient) => {
   logger.info("discord_client_ready", { botUser: readyClient.user.tag });
-  void nitradoPoller.start(shutdown.signal);
+  pollerTask = nitradoPoller.start(shutdown.signal);
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     shutdown.abort();
     client.destroy();
+    void pollerTask?.catch(() => {});
   });
 }
 

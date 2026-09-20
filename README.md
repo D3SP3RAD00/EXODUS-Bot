@@ -51,12 +51,16 @@ files unless Nitrado identifies that exact service as DayZ on Xbox with file bro
 `NITRADO_LOG_DIRECTORY` is optional. When blank, discovery begins at the service's documented home
 directory and follows returned child directories within bounded depth and entry limits. Setting it to
 the known DayZ log directory reduces API requests. Poll intervals, request timeouts, retry limits,
-exponential backoff, and discovery bounds are configurable in `.env.example`.
+exponential backoff with jitter, discovery bounds, maximum download size, and permitted download
+hosts are configurable in `.env.example`. Keep `NITRADO_DOWNLOAD_HOSTS` restricted to the exact
+Nitrado-owned hosts (or the documented `*.nitrado.net` pattern) used by your service.
 
 The token is sent only in the `Authorization: Bearer` header to `https://api.nitrado.net`. Temporary
-download URLs must use HTTPS on a Nitrado-owned hostname. Download requests never receive the account
-token. Authorization failures are not retried; rate limits, temporary service failures, timeouts,
-network interruptions, and partial downloads use bounded retries.
+download URLs must use HTTPS on the explicit host allowlist. Redirects are disabled for both API and
+download requests, and download requests never receive the account token. Bodies are streamed under
+strict byte and duration limits and must be valid ADM content. Authorization failures are not retried;
+rate limits, temporary service failures, timeouts, network interruptions, and partial downloads use
+bounded retries. Shutdown aborts active requests before another checkpoint can begin.
 
 ## Local setup
 

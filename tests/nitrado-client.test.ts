@@ -18,6 +18,8 @@ const options: NitradoReadOnlyClientOptions = {
   backoffMaxMs: 1_000,
   discoveryMaxDepth: 4,
   discoveryMaxEntries: 100,
+  maxDownloadBytes: 1_000_000,
+  downloadHostAllowlist: ["nitrado.net", "*.nitrado.net"],
   logDirectory: "/logs",
 };
 
@@ -56,7 +58,10 @@ function ticket(url = "https://files.nitrado.net/download/?token=temporary-downl
 }
 
 function content(body = CONTENT, declaredLength = Buffer.byteLength(body)): Response {
-  return new Response(body, { status: 200, headers: { "content-length": String(declaredLength) } });
+  return new Response(body, {
+    status: 200,
+    headers: { "content-length": String(declaredLength), "content-type": "text/plain" },
+  });
 }
 
 function sequencedFetch(responses: Array<Response | Error>): ReturnType<typeof vi.fn> {
@@ -174,7 +179,7 @@ describe("NitradoReadOnlyClient official API contract", () => {
     const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch, sleep);
 
     await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
-    expect(sleep).toHaveBeenCalledWith(1_000);
+    expect(sleep).toHaveBeenCalledWith(1_000, undefined);
   });
 
   it("retries network interruptions with exponential backoff", async () => {
@@ -187,10 +192,10 @@ describe("NitradoReadOnlyClient official API contract", () => {
       content(),
     ]);
     const sleep = vi.fn(async () => {});
-    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch, sleep);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch, sleep, () => new Date(), () => 0);
 
     await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
-    expect(sleep.mock.calls).toEqual([[100], [200]]);
+    expect(sleep.mock.calls).toEqual([[100, undefined], [200, undefined]]);
   });
 
   it("times out interrupted requests without revealing the token", async () => {
@@ -233,12 +238,15 @@ describe("NitradoReadOnlyClient official API contract", () => {
     const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch, sleep);
 
     await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
-    expect(sleep).toHaveBeenCalledWith(100);
+    expect(sleep).toHaveBeenCalledWith(expect.any(Number), undefined);
   });
 
   it("retries when the download body stream is interrupted", async () => {
-    const interrupted = new Response(CONTENT, { status: 200 });
-    vi.spyOn(interrupted, "text").mockRejectedValueOnce(new TypeError("synthetic interrupted body"));
+    const interrupted = new Response(new ReadableStream({
+      pull(controller) {
+        controller.error(new TypeError("synthetic interrupted body"));
+      },
+    }), { status: 200 });
     const fetchMock = sequencedFetch([
       details(),
       listing([adm("/logs/current.ADM", 10)]),
@@ -251,7 +259,7 @@ describe("NitradoReadOnlyClient official API contract", () => {
     const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch, sleep);
 
     await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
-    expect(sleep).toHaveBeenCalledWith(100);
+    expect(sleep).toHaveBeenCalledWith(expect.any(Number), undefined);
   });
 
   it("rejects unsafe file paths and untrusted download hosts", async () => {
@@ -271,6 +279,219 @@ describe("NitradoReadOnlyClient official API contract", () => {
     await expect(unsafeHostClient.downloadLatestAdmLog()).rejects.toMatchObject({
       code: "NITRADO_UNSAFE_DOWNLOAD",
     });
+  });
+
+  it("binds bearer authorization to the official API origin and never sends it to downloads", async () => {
+    const fetchMock = sequencedFetch([details(), listing([adm("/logs/current.ADM", 10)]), ticket(), content()]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+
+    await client.downloadLatestAdmLog();
+
+    for (const [input, init] of fetchMock.mock.calls) {
+      const url = new URL(String(input));
+      if (url.origin === "https://api.nitrado.net") {
+        expect(init?.headers).toEqual({ Authorization: `Bearer ${TOKEN}` });
+      } else {
+        expect(init?.headers).toBeUndefined();
+      }
+      expect(init?.redirect).toBe("error");
+    }
+  });
+
+  it("does not follow API or temporary-download redirects", async () => {
+    const apiRedirectFetch = sequencedFetch([
+      new Response(null, { status: 302, headers: { location: "https://evil.example/steal" } }),
+    ]);
+    const apiClient = new NitradoReadOnlyClient(options, apiRedirectFetch as typeof fetch);
+    await expect(apiClient.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_REQUEST_FAILED" });
+    expect(apiRedirectFetch).toHaveBeenCalledTimes(1);
+    expect(apiRedirectFetch.mock.calls[0]?.[1]?.redirect).toBe("error");
+
+    const downloadRedirectFetch = sequencedFetch([
+      details(), listing([adm("/logs/current.ADM", 10)]), ticket(),
+      new Response(null, { status: 302, headers: { location: "https://evil.example/steal" } }),
+    ]);
+    const downloadClient = new NitradoReadOnlyClient(
+      { ...options, retryLimit: 0 },
+      downloadRedirectFetch as typeof fetch
+    );
+    await expect(downloadClient.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_REQUEST_FAILED" });
+    expect(downloadRedirectFetch).toHaveBeenCalledTimes(4);
+    expect(downloadRedirectFetch.mock.calls[3]?.[1]?.headers).toBeUndefined();
+  });
+
+  it.each([
+    "http://files.nitrado.net/download?token=secret",
+    "https://nitrado.net.evil.example/download?token=secret",
+    "https://files.nitrado.net:8443/download?token=secret",
+    "https://user:password@files.nitrado.net/download?token=secret",
+    "https://files.nitrado.net/download?token=secret#fragment",
+  ])("rejects unsafe temporary download URL %s without disclosing it", async (url) => {
+    const fetchMock = sequencedFetch([details(), listing([adm("/logs/current.ADM", 10)]), ticket(url)]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+    let thrown: unknown;
+    try {
+      await client.downloadLatestAdmLog();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toMatchObject({ code: "NITRADO_UNSAFE_DOWNLOAD" });
+    expect(String(thrown)).not.toContain("secret");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it("accepts only an explicitly configured exact download host", async () => {
+    const fetchMock = sequencedFetch([
+      details(), listing([adm("/logs/current.ADM", 10)]),
+      ticket("https://download.example.net/file?sig=temporary"), content(),
+    ]);
+    const client = new NitradoReadOnlyClient(
+      { ...options, downloadHostAllowlist: ["download.example.net"] },
+      fetchMock as typeof fetch
+    );
+    await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
+  });
+
+  it.each([
+    "/logs/../secret.ADM",
+    "/logs//nested/current.ADM",
+    "/logs/%2e%2e/secret.ADM",
+    "/logs-escape/current.ADM",
+  ])("rejects a path outside or non-canonical to the configured root: %s", async (path) => {
+    const fetchMock = sequencedFetch([details(), listing([adm(path, 10)])]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+    await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_UNSAFE_PATH" });
+  });
+
+  it("rejects misleading entry names and non-canonical configured roots", async () => {
+    const fetchMock = sequencedFetch([
+      details(),
+      listing([{ ...adm("/logs/current.ADM", 10), name: "different.ADM" }]),
+    ]);
+    await expect(new NitradoReadOnlyClient(options, fetchMock as typeof fetch).downloadLatestAdmLog())
+      .rejects.toMatchObject({ code: "NITRADO_UNSAFE_PATH" });
+    expect(() => new NitradoReadOnlyClient({ ...options, logDirectory: "/logs/../secret" })).toThrow(
+      "canonical absolute path"
+    );
+  });
+
+  it("fails closed on unsupported listing pagination and bounded discovery overflow", async () => {
+    const paginated = sequencedFetch([
+      details(),
+      jsonResponse({ status: "success", data: { entries: [], next_page: 2 } }),
+    ]);
+    await expect(new NitradoReadOnlyClient(options, paginated as typeof fetch).downloadLatestAdmLog())
+      .rejects.toMatchObject({ code: "NITRADO_UNSUPPORTED_PAGINATION" });
+
+    const overflow = sequencedFetch([
+      details(),
+      listing([adm("/logs/a.ADM", 1), adm("/logs/b.ADM", 2)]),
+    ]);
+    await expect(new NitradoReadOnlyClient(
+      { ...options, discoveryMaxEntries: 1 },
+      overflow as typeof fetch
+    ).downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_DISCOVERY_LIMIT" });
+  });
+
+  it("strictly verifies service ID, DayZ machine identity, and Xbox human identity", async () => {
+    for (const override of [
+      { service_id: 99999 },
+      { game: "dayzpc", game_human: "DayZ (Xbox One)" },
+      { game: "dayzxb", game_human: "DayZ (PC)" },
+    ]) {
+      const client = new NitradoReadOnlyClient(options, sequencedFetch([details(override)]) as typeof fetch);
+      await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_WRONG_SERVICE" });
+    }
+  });
+
+  it("enforces declared and streamed response-size limits", async () => {
+    const declaredFetch = sequencedFetch([
+      details(), listing([adm("/logs/current.ADM", 10, 1)]), ticket(),
+      content(CONTENT, Buffer.byteLength(CONTENT)),
+    ]);
+    await expect(new NitradoReadOnlyClient(
+      { ...options, maxDownloadBytes: 8, retryLimit: 0 },
+      declaredFetch as typeof fetch
+    ).downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_RESPONSE_TOO_LARGE" });
+
+    const streamedFetch = sequencedFetch([
+      details(), listing([adm("/logs/current.ADM", 10, 1)]), ticket(),
+      new Response(CONTENT, { status: 200, headers: { "content-type": "text/plain" } }),
+    ]);
+    await expect(new NitradoReadOnlyClient(
+      { ...options, maxDownloadBytes: 8, retryLimit: 0 },
+      streamedFetch as typeof fetch
+    ).downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_RESPONSE_TOO_LARGE" });
+  });
+
+  it("keeps the timeout active while the download body is streaming", async () => {
+    const fetchMock = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const call = fetchMock.mock.calls.length;
+      if (call === 1) return details();
+      if (call === 2) return listing([adm("/logs/current.ADM", 10, 1)]);
+      if (call === 3) return ticket();
+      return new Response(new ReadableStream({
+        start(controller) {
+          init?.signal?.addEventListener("abort", () => controller.error(new DOMException("Aborted", "AbortError")));
+        },
+      }), { status: 200, headers: { "content-type": "text/plain" } });
+    });
+    const client = new NitradoReadOnlyClient(
+      { ...options, requestTimeoutMs: 1, retryLimit: 0 },
+      fetchMock as typeof fetch
+    );
+    await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_NETWORK_FAILED" });
+  });
+
+  it("fails safely on incorrect Content-Length, HTML, and malformed ADM data", async () => {
+    const cases: Array<{ response: Response; code: string }> = [
+      { response: content(CONTENT, Buffer.byteLength(CONTENT) + 1), code: "NITRADO_PARTIAL_DOWNLOAD" },
+      { response: new Response("<html>error</html>", { status: 200, headers: { "content-type": "text/html" } }), code: "NITRADO_INVALID_ADM" },
+      { response: new Response("not an admin log\n", { status: 200, headers: { "content-type": "text/plain" } }), code: "NITRADO_INVALID_ADM" },
+    ];
+    for (const testCase of cases) {
+      const fetchMock = sequencedFetch([
+        details(), listing([adm("/logs/current.ADM", 10, 1)]), ticket(), testCase.response,
+      ]);
+      const client = new NitradoReadOnlyClient(
+        { ...options, retryLimit: 0 },
+        fetchMock as typeof fetch
+      );
+      await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: testCase.code });
+    }
+  });
+
+  it("honors HTTP-date Retry-After with bounded positive jitter", async () => {
+    const now = new Date("2026-09-20T12:00:00.500Z");
+    const fetchMock = sequencedFetch([
+      jsonResponse({ status: "error" }, 429, { "retry-after": "Sun, 20 Sep 2026 12:00:01 GMT" }),
+      details(), listing([adm("/logs/current.ADM", 10)]), ticket(), content(),
+    ]);
+    const sleep = vi.fn(async () => {});
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch, sleep, () => now, () => 1);
+    await client.downloadLatestAdmLog();
+    expect(sleep).toHaveBeenCalledWith(525, undefined);
+  });
+
+  it("never retains temporary URLs or fetch errors as public error causes", async () => {
+    const secretUrl = "https://files.nitrado.net/download/private.ADM?token=never-log&signature=never-log";
+    const fetchMock = sequencedFetch([
+      details(), listing([adm("/logs/current.ADM", 10)]), ticket(secretUrl),
+      new TypeError(`failed ${secretUrl} Authorization: Bearer ${TOKEN}`),
+    ]);
+    const client = new NitradoReadOnlyClient(
+      { ...options, retryLimit: 0 },
+      fetchMock as typeof fetch
+    );
+    let thrown: unknown;
+    try {
+      await client.downloadLatestAdmLog();
+    } catch (error) {
+      thrown = error;
+    }
+    expect(String(thrown)).not.toContain("never-log");
+    expect(String(thrown)).not.toContain(TOKEN);
+    expect((thrown as Error & { cause?: unknown }).cause).toBeUndefined();
   });
 
   it.each([

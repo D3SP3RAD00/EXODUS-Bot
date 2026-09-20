@@ -9,6 +9,8 @@ describe("structured log redaction", () => {
       nitradoApiKey: "nitrado-secret",
       nested: { authorization: "Bearer abc.def.ghi", cookie: "session-secret" },
       errorMessage: "request failed token=raw-secret&safe=yes",
+      downloadUrl: "https://files.nitrado.net/download/private.ADM?token=temporary&signature=signed",
+      signedError: "failed https://files.nitrado.net/download/private.ADM?X-Amz-Credential=name&X-Amz-Signature=value",
       safeMessage: "connection timed out",
     });
     expect(redacted).toEqual({
@@ -16,6 +18,8 @@ describe("structured log redaction", () => {
       nitradoApiKey: "[REDACTED]",
       nested: { authorization: "[REDACTED]", cookie: "[REDACTED]" },
       errorMessage: "request failed token=[REDACTED]&safe=yes",
+      downloadUrl: "[REDACTED]",
+      signedError: "failed https://files.nitrado.net/download/private.ADM?[REDACTED]",
       safeMessage: "connection timed out",
     });
   });
