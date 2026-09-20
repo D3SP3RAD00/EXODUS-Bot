@@ -28,7 +28,6 @@ COPY --chown=root:root docker-entrypoint.sh /usr/local/bin/exodus-entrypoint
 RUN chmod 0755 /usr/local/bin/exodus-entrypoint
 
 USER node
-VOLUME ["/data"]
 STOPSIGNAL SIGTERM
 ENTRYPOINT ["exodus-entrypoint"]
 CMD ["node", "dist/index.js"]
