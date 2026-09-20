@@ -12,7 +12,7 @@ function redactString(value: string): string {
     .replace(/https:\/\/[^\s,]+/gi, (candidate) => {
       try {
         const url = new URL(candidate);
-        return url.search ? `${url.origin}${url.pathname}?[REDACTED]` : candidate;
+        return url.search || /download|temporary/i.test(url.pathname) ? "[REDACTED_URL]" : candidate;
       } catch {
         return "[REDACTED_URL]";
       }
