@@ -15,7 +15,7 @@ describe("parseAdminLog", () => {
     const parsed = parseAdminLog(fixture);
 
     expect(parsed.logDate).toBe("2026-09-19");
-    expect(parsed.startedAt).toBe("2026-09-19T13:57:59");
+    expect(parsed.startedAt).toBe("2026-09-19T13:57:59Z");
     expect(parsed.events).toHaveLength(6);
     expect(parsed.ignoredLines).toEqual([]);
     expect(parsed.events.map((event) => event.type)).toEqual([
@@ -56,5 +56,32 @@ describe("parseAdminLog", () => {
     expect(() => parseAdminLog("not a DayZ log")).toThrow(
       "ADM log header was not found."
     );
+  });
+
+  it("rejects invalid header times and ignores invalid event times", () => {
+    expect(() => parseAdminLog(
+      "AdminLog started on 2026-09-19 at 29:00:00\n"
+    )).toThrow("invalid timestamp");
+
+    const parsed = parseAdminLog([
+      "AdminLog started on 2026-09-19 at 13:00:00",
+      "25:99:00 | Player \"ExampleSurvivor\" (id=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) is connected",
+      "",
+    ].join("\n"));
+    expect(parsed.events).toEqual([]);
+    expect(parsed.ignoredLines).toHaveLength(1);
+  });
+
+  it("rolls timestamps forward consistently when a log crosses midnight", () => {
+    const parsed = parseAdminLog([
+      "AdminLog started on 2026-09-19 at 23:55:00",
+      "23:59:00 | Player \"ExampleSurvivor\" (id=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) is connected",
+      "00:01:00 | Player \"ExampleSurvivor\" (id=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA) has been disconnected",
+      "",
+    ].join("\n"));
+    expect(parsed.events.map((event) => event.occurredAt)).toEqual([
+      "2026-09-19T23:59:00Z",
+      "2026-09-20T00:01:00Z",
+    ]);
   });
 });
