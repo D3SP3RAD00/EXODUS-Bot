@@ -1,4 +1,5 @@
 import { Client, Events, GatewayIntentBits } from "discord.js";
+import { join } from "node:path";
 
 import { loadConfig } from "./config.js";
 import { CommandHandler } from "./discord/command-handler.js";
@@ -7,7 +8,7 @@ import { JsonFileStorage } from "./storage/json-file-storage.js";
 
 const config = loadConfig();
 const logger = new StructuredConsoleLogger();
-const storage = new JsonFileStorage(config.DATA_FILE);
+const storage = new JsonFileStorage(join(config.DATA_DIRECTORY, "exodus-bot.json"));
 const commandHandler = new CommandHandler(storage, logger);
 const client = new Client({
   intents: [GatewayIntentBits.Guilds],

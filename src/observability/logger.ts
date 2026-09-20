@@ -6,16 +6,30 @@ export interface Logger {
   error(event: string, context?: LogContext): void;
 }
 
-const sensitiveKey = /token|password|secret|authorization/i;
+const sensitiveKey = /token|password|secret|authorization|api[-_]?key|credential|cookie|private[-_]?key/i;
+function redactString(value: string): string {
+  return value
+    .replace(/\b(Bot|Bearer)\s+[A-Za-z0-9._~-]+/gi, "$1 [REDACTED]")
+    .replace(
+      /((?:token|password|secret|authorization|api[-_]?key|credential|cookie)\s*[:=]\s*)[^\s,;&]+/gi,
+      "$1[REDACTED]"
+    )
+    .replace(
+      /([?&](?:token|password|secret|authorization|api[-_]?key|credential|cookie)=)[^&\s]+/gi,
+      "$1[REDACTED]"
+    )
+    .replace(/\b(?:mfa\.)?[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]");
+}
 
-function redact(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redact);
+export function redactLogValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactLogValue);
+  if (typeof value === "string") return redactString(value);
   if (!value || typeof value !== "object") return value;
 
   return Object.fromEntries(
     Object.entries(value).map(([key, nested]) => [
       key,
-      sensitiveKey.test(key) ? "[REDACTED]" : redact(nested),
+      sensitiveKey.test(key) ? "[REDACTED]" : redactLogValue(nested),
     ])
   );
 }
@@ -38,7 +52,7 @@ export class StructuredConsoleLogger implements Logger {
       timestamp: new Date().toISOString(),
       level,
       event,
-      ...redact(context) as LogContext,
+      ...redactLogValue(context) as LogContext,
     });
     const writer = level === "error" ? console.error : level === "warn" ? console.warn : console.log;
     writer(output);

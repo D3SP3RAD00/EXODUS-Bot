@@ -19,7 +19,7 @@ Deterministic Discord and Xbox DayZ server automation for the !!EXODUS Badlands 
 - Xbox/Nitrado ADM parser for connections, snapshots, emotes, and disconnects
 - Checkpointed, idempotent ADM ingestion with log-rotation detection
 - Persistent player sessions and accumulated playtime
-- Atomic JSON storage with reserved economy and faction domains
+- Serialized, recoverable atomic JSON storage with reserved economy and faction domains
 - Structured, credential-redacting operational logs
 - Nitrado access isolated behind an adapter interface
 - Automated parser, restart, reconnect, duplicate, malformed-line, and incomplete-session tests
@@ -38,5 +38,8 @@ tested without network access and reused unchanged when the real Nitrado connect
 4. Put the Discord bot token in `.env`.
 5. Run `npm run commands:register` once.
 6. Run `npm run dev`.
+
+Set `DATA_DIRECTORY` to a persistent mounted directory in hosted environments. The bot stores its
+state as `exodus-bot.json` inside that directory and maintains recovery files alongside it.
 
 Never commit `.env` or the bot token.

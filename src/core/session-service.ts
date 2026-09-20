@@ -3,16 +3,22 @@ import { createHash } from "node:crypto";
 import type { AdminLogEvent } from "../dayz/admin-log.js";
 import type { BotState, PlayerRecord, PlayerSession, SessionCloseReason } from "./state.js";
 
-function epoch(isoLocal: string): number {
-  return Date.parse(`${isoLocal.replace(/Z$/, "")}Z`);
+function epoch(isoTimestamp: string): number | undefined {
+  const value = Date.parse(isoTimestamp);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 function duration(startedAt: string, endedAt: string): number {
-  return Math.max(0, epoch(endedAt) - epoch(startedAt));
+  const start = epoch(startedAt);
+  const end = epoch(endedAt);
+  if (start === undefined || end === undefined || end <= start) return 0;
+  return end - start;
 }
 
-function createSessionId(playerId: string, startedAt: string): string {
-  return createHash("sha256").update(`${playerId}|${startedAt}`).digest("hex");
+function createSessionId(event: AdminLogEvent): string {
+  return createHash("sha256")
+    .update(`${event.playerId}|${event.occurredAt}|${event.fingerprint}|${event.occurrence}`)
+    .digest("hex");
 }
 
 function upsertPlayer(state: BotState, event: AdminLogEvent): PlayerRecord {
@@ -71,7 +77,7 @@ export function applyAdminLogEvent(state: BotState, event: AdminLogEvent): void 
   upsertPlayer(state, event);
   if (event.type === "player_connected") {
     closeSession(state, event.playerId, event.occurredAt, "reconnect");
-    const id = createSessionId(event.playerId, event.occurredAt);
+    const id = createSessionId(event);
     state.sessions[id] = {
       sessionId: id,
       playerId: event.playerId,

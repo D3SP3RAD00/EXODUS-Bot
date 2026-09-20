@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { AdmLogSnapshot, AdmLogSource } from "../adapters/adm-log-source.js";
 import { applyAdminLogEvent, closeOpenSessionsForRestart } from "../core/session-service.js";
 import type { Logger } from "../observability/logger.js";
@@ -11,7 +13,14 @@ export type IngestionResult = {
   malformedLines: number;
   checkpointReset: boolean;
   incompleteSessionsClosed: number;
+  truncatedSnapshot: boolean;
 };
+
+function eventKey(sourceId: string, logStartedAt: string, fingerprint: string, occurrence: number): string {
+  return createHash("sha256")
+    .update(`${sourceId}|${logStartedAt}|${fingerprint}|${occurrence}`)
+    .digest("hex");
+}
 
 export class AdmIngestor {
   constructor(private readonly storage: Storage, private readonly logger: Logger) {}
@@ -25,7 +34,20 @@ export class AdmIngestor {
     const lines = completeAdmLines(snapshot.content);
     const result = await this.storage.transaction((state) => {
       const checkpoint = state.checkpoints[snapshot.sourceId];
+      const sameLog = checkpoint?.logStartedAt === parsed.startedAt;
+      if (checkpoint && sameLog && lines.length < checkpoint.processedLineCount) {
+        return {
+          sourceId: snapshot.sourceId,
+          processedEvents: 0,
+          duplicateEvents: 0,
+          malformedLines: 0,
+          checkpointReset: false,
+          incompleteSessionsClosed: 0,
+          truncatedSnapshot: true,
+        };
+      }
       const prefixStillMatches = checkpoint !== undefined
+        && sameLog
         && checkpoint.processedLineCount <= lines.length
         && hashAdmLines(lines.slice(0, checkpoint.processedLineCount)) === checkpoint.prefixHash;
       const checkpointReset = checkpoint !== undefined && !prefixStillMatches;
@@ -40,12 +62,13 @@ export class AdmIngestor {
       let processedEvents = 0;
       let duplicateEvents = 0;
       for (const event of parsed.events.filter((entry) => entry.lineNumber >= firstUnprocessedLine)) {
-        if (state.processedEventFingerprints[event.fingerprint]) {
+        const key = eventKey(snapshot.sourceId, parsed.startedAt, event.fingerprint, event.occurrence);
+        if (state.processedEventKeys[key]) {
           duplicateEvents += 1;
           continue;
         }
         applyAdminLogEvent(state, event);
-        state.processedEventFingerprints[event.fingerprint] = event.occurredAt;
+        state.processedEventKeys[key] = event.occurredAt;
         processedEvents += 1;
       }
       state.checkpoints[snapshot.sourceId] = {
@@ -62,8 +85,14 @@ export class AdmIngestor {
         malformedLines: parsed.ignoredLines.filter((line) => line.lineNumber >= firstUnprocessedLine).length,
         checkpointReset,
         incompleteSessionsClosed,
+        truncatedSnapshot: false,
       };
     });
+    if (result.truncatedSnapshot) {
+      this.logger.warn("adm_ingestion_truncated_snapshot", {
+        sourceId: result.sourceId,
+      });
+    }
     if (result.malformedLines > 0) {
       this.logger.warn("adm_ingestion_malformed_lines", { sourceId: result.sourceId, count: result.malformedLines });
     }

@@ -33,7 +33,7 @@ export type BotState = {
   players: Record<string, PlayerRecord>;
   sessions: Record<string, PlayerSession>;
   openSessionByPlayer: Record<string, string>;
-  processedEventFingerprints: Record<string, string>;
+  processedEventKeys: Record<string, string>;
   checkpoints: Record<string, IngestionCheckpoint>;
   domains: {
     economy: { accounts: Record<string, unknown> };
@@ -50,7 +50,7 @@ export function createEmptyState(): BotState {
     players: {},
     sessions: {},
     openSessionByPlayer: {},
-    processedEventFingerprints: {},
+    processedEventKeys: {},
     checkpoints: {},
     domains: {
       economy: { accounts: {} },

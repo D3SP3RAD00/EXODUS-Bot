@@ -4,6 +4,7 @@ export type Position = { x: number; y: number; z: number };
 
 type PlayerEventBase = {
   fingerprint: string;
+  occurrence: number;
   lineNumber: number;
   logDate: string;
   occurredAt: string;
@@ -33,6 +34,30 @@ export type ParsedAdminLog = {
 const headerPattern = /AdminLog started on (\d{4})-(\d{2})-(\d{2}) at (\d{2}:\d{2}:\d{2})/;
 const timedLinePattern = /^(\d{2}:\d{2}:\d{2}) \| (.+)$/;
 const playerPattern = /^Player "([^"]+)" \(id=([A-Fa-f0-9]+)(?: pos=<([^>]+)>)?\)(?: (.*))?$/;
+
+function parseClockSeconds(value: string): number | undefined {
+  const match = /^(\d{2}):(\d{2}):(\d{2})$/.exec(value);
+  if (!match) return undefined;
+  const hours = Number(match[1]);
+  const minutes = Number(match[2]);
+  const seconds = Number(match[3]);
+  if (hours > 23 || minutes > 59 || seconds > 59) return undefined;
+  return hours * 3_600 + minutes * 60 + seconds;
+}
+
+function utcTimestamp(date: string, clockSeconds: number, dayOffset = 0): string | undefined {
+  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
+  if (!dateMatch) return undefined;
+  const year = Number(dateMatch[1]);
+  const month = Number(dateMatch[2]);
+  const day = Number(dateMatch[3]);
+  const midnight = new Date(Date.UTC(year, month - 1, day + dayOffset));
+  if (
+    dayOffset === 0 &&
+    (midnight.getUTCFullYear() !== year || midnight.getUTCMonth() !== month - 1 || midnight.getUTCDate() !== day)
+  ) return undefined;
+  return new Date(midnight.getTime() + clockSeconds * 1_000).toISOString().replace(".000Z", "Z");
+}
 
 export function completeAdmLines(input: string): string[] {
   const normalized = input.replaceAll("\r\n", "\n").replaceAll("\r", "\n");
@@ -85,8 +110,15 @@ export function parseAdminLog(input: string): ParsedAdminLog {
 
   const [, year, month, day, startTime] = header;
   const logDate = `${year}-${month}-${day}`;
+  const startSeconds = parseClockSeconds(startTime!);
+  if (startSeconds === undefined) throw new Error("ADM log header contains an invalid timestamp.");
+  const startedAt = utcTimestamp(logDate, startSeconds);
+  if (!startedAt) throw new Error("ADM log header contains an invalid timestamp.");
   const events: AdminLogEvent[] = [];
   const ignoredLines: IgnoredAdminLogLine[] = [];
+  const fingerprintOccurrences = new Map<string, number>();
+  let previousClockSeconds = startSeconds;
+  let dayOffset = 0;
 
   lines.forEach((originalLine, index) => {
     const lineNumber = index + 1;
@@ -98,6 +130,13 @@ export function parseAdminLog(input: string): ParsedAdminLog {
       return;
     }
     const [, time, payload] = timed;
+    const clockSeconds = parseClockSeconds(time!);
+    if (clockSeconds === undefined) {
+      ignoredLines.push({ lineNumber, raw: line });
+      return;
+    }
+    if (previousClockSeconds - clockSeconds > 43_200) dayOffset += 1;
+    previousClockSeconds = clockSeconds;
     if (payload.startsWith("#####")) return;
     const player = playerPattern.exec(payload);
     if (!player?.[1] || !player[2]) {
@@ -110,9 +149,16 @@ export function parseAdminLog(input: string): ParsedAdminLog {
       ignoredLines.push({ lineNumber, raw: line });
       return;
     }
+    const fingerprint = eventFingerprint(logDate, line);
+    const occurrence = (fingerprintOccurrences.get(fingerprint) ?? 0) + 1;
+    fingerprintOccurrences.set(fingerprint, occurrence);
+    const occurredAt = utcTimestamp(logDate, clockSeconds, dayOffset);
+    if (!occurredAt) {
+      ignoredLines.push({ lineNumber, raw: line });
+      return;
+    }
     const base: PlayerEventBase = {
-      fingerprint: eventFingerprint(logDate, line), lineNumber, logDate,
-      occurredAt: `${logDate}T${time}`, playerName, playerId, raw: line,
+      fingerprint, occurrence, lineNumber, logDate, occurredAt, playerName, playerId, raw: line,
     };
     const position = parsePosition(positionValue);
     if (position) base.position = position;
@@ -121,7 +167,7 @@ export function parseAdminLog(input: string): ParsedAdminLog {
 
   return {
     logDate,
-    startedAt: `${logDate}T${startTime}`,
+    startedAt,
     events,
     ignoredLines,
     completeLineCount: lines.length,

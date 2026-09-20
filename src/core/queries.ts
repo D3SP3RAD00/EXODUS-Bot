@@ -3,9 +3,9 @@ import { playerPlaytimeMs } from "./session-service.js";
 import type { BotState, PlayerRecord } from "./state.js";
 
 export function findPlayerByName(state: BotState, name: string): PlayerRecord {
-  const normalized = name.trim().toLocaleLowerCase();
+  const normalized = name.trim().toLowerCase();
   const matches = Object.values(state.players).filter((player) =>
-    player.aliases.some((alias) => alias.toLocaleLowerCase() === normalized)
+    player.aliases.some((alias) => alias.toLowerCase() === normalized)
   );
   if (matches.length === 0) {
     throw new AdminFacingError("PLAYER_NOT_FOUND", `No tracked player matches “${name}”.`);
