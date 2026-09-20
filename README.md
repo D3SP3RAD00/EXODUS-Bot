@@ -22,6 +22,7 @@ Deterministic Discord and Xbox DayZ server automation for the !!EXODUS Badlands 
 - Serialized, recoverable atomic JSON storage with reserved economy and faction domains
 - Structured, credential-redacting operational logs
 - Read-only Nitrado ADM discovery and polling isolated behind an adapter interface
+- Railway-ready container lifecycle with persistent storage and single-instance protection
 - Automated parser, restart, reconnect, duplicate, malformed-line, and incomplete-session tests
 
 ## Architecture
@@ -75,3 +76,5 @@ Set `DATA_DIRECTORY` to a persistent mounted directory in hosted environments. T
 state as `exodus-bot.json` inside that directory and maintains recovery files alongside it.
 
 Never commit `.env`, the Discord token, or the Nitrado token.
+
+For hosted production setup, follow the step-by-step [Railway deployment guide](docs/railway-deployment.md).

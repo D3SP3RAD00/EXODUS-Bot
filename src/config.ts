@@ -1,4 +1,7 @@
+import { isAbsolute } from "node:path";
 import { z } from "zod";
+
+const requiredString = z.string().trim().min(1);
 
 const optionalNonEmptyString = z.preprocess(
   (value) => value === "" ? undefined : value,
@@ -22,11 +25,11 @@ const integerEnvironment = (minimum: number, maximum?: number) => {
 };
 
 const configSchema = z.object({
-  DISCORD_BOT_TOKEN: z.string().min(1),
+  DISCORD_BOT_TOKEN: requiredString,
   DISCORD_APPLICATION_ID: z.string().regex(/^\d+$/),
   DISCORD_GUILD_ID: z.string().regex(/^\d+$/),
-  DATA_DIRECTORY: z.string().min(1).default("./data"),
-  NITRADO_TOKEN: z.string().min(1),
+  DATA_DIRECTORY: requiredString.refine(isAbsolute, "Must be an absolute path."),
+  NITRADO_TOKEN: requiredString,
   NITRADO_SERVICE_ID: positiveIntegerString,
   NITRADO_LOG_DIRECTORY: optionalNonEmptyString,
   NITRADO_DOWNLOAD_HOSTS: z.string().min(1).default("nitrado.net,*.nitrado.net"),
@@ -38,6 +41,14 @@ const configSchema = z.object({
   NITRADO_BACKOFF_MAX_MS: integerEnvironment(1_000).default(30_000),
   NITRADO_DISCOVERY_MAX_DEPTH: integerEnvironment(0, 20).default(8),
   NITRADO_DISCOVERY_MAX_ENTRIES: integerEnvironment(1).default(10_000),
+}).superRefine((config, context) => {
+  if (config.NITRADO_BACKOFF_BASE_MS > config.NITRADO_BACKOFF_MAX_MS) {
+    context.addIssue({
+      code: "custom",
+      path: ["NITRADO_BACKOFF_BASE_MS"],
+      message: "Must not exceed NITRADO_BACKOFF_MAX_MS.",
+    });
+  }
 });
 
 export type BotConfig = z.infer<typeof configSchema>;
