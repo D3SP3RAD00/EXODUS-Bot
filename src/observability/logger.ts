@@ -6,16 +6,24 @@ export interface Logger {
   error(event: string, context?: LogContext): void;
 }
 
-const sensitiveKey = /token|password|secret|authorization|api[-_]?key|credential|cookie|private[-_]?key/i;
+const sensitiveKey = /token|password|secret|authorization|api[-_]?key|credential|cookie|private[-_]?key|download[-_]?url|temporary[-_]?url/i;
 function redactString(value: string): string {
   return value
+    .replace(/https:\/\/[^\s,]+/gi, (candidate) => {
+      try {
+        const url = new URL(candidate);
+        return url.search || /download|temporary/i.test(url.pathname) ? "[REDACTED_URL]" : candidate;
+      } catch {
+        return "[REDACTED_URL]";
+      }
+    })
     .replace(/\b(Bot|Bearer)\s+[A-Za-z0-9._~-]+/gi, "$1 [REDACTED]")
     .replace(
-      /((?:token|password|secret|authorization|api[-_]?key|credential|cookie)\s*[:=]\s*)[^\s,;&]+/gi,
+      /((?:token|password|secret|authorization|api[-_]?key|credential|cookie|signature|sig)\s*[:=]\s*)[^\s,;&]+/gi,
       "$1[REDACTED]"
     )
     .replace(
-      /([?&](?:token|password|secret|authorization|api[-_]?key|credential|cookie)=)[^&\s]+/gi,
+      /([?&](?:token|password|secret|authorization|api[-_]?key|credential|cookie|signature|sig|key|code)=)[^&\s]+/gi,
       "$1[REDACTED]"
     )
     .replace(/\b(?:mfa\.)?[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{20,}\b/g, "[REDACTED]");
