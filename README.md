@@ -14,11 +14,21 @@ Deterministic Discord and Xbox DayZ server automation for the !!EXODUS Badlands 
 ## Current foundation
 
 - Discord bot connection
-- Guild-scoped `/status` command
+- Guild-scoped `/status`, `/players`, and `/playtime` commands
 - Runtime environment validation
 - Xbox/Nitrado ADM parser for connections, snapshots, emotes, and disconnects
-- Stable event fingerprints for duplicate protection
-- Automated parser tests based on a real EXODUS log
+- Checkpointed, idempotent ADM ingestion with log-rotation detection
+- Persistent player sessions and accumulated playtime
+- Atomic JSON storage with reserved economy and faction domains
+- Structured, credential-redacting operational logs
+- Nitrado access isolated behind an adapter interface
+- Automated parser, restart, reconnect, duplicate, malformed-line, and incomplete-session tests
+
+## Architecture
+
+The deterministic core does not call Nitrado directly. `AdmLogSource` defines the input boundary and
+`NitradoAdmLogAdapter` wraps the future authenticated client. The ingestion and storage layers can be
+tested without network access and reused unchanged when the real Nitrado connection is added.
 
 ## Local setup
 
