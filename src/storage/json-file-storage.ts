@@ -2,15 +2,15 @@ import { open, readFile, rename } from "node:fs/promises";
 import { dirname } from "node:path";
 import { mkdir } from "node:fs/promises";
 
-import { cloneState, createEmptyState, type BotState } from "../core/state.js";
+import { cloneState, createEmptyState, migrateBotState, type BotState } from "../core/state.js";
 import type { Storage } from "./storage.js";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
-function isBotState(value: unknown): value is BotState {
-  if (!isRecord(value) || value.schemaVersion !== 1) return false;
+function isBotState(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || (value.schemaVersion !== 1 && value.schemaVersion !== 2)) return false;
   return [
     "players",
     "sessions",
@@ -24,7 +24,7 @@ function isBotState(value: unknown): value is BotState {
 async function readState(path: string): Promise<BotState | undefined> {
   try {
     const value: unknown = JSON.parse(await readFile(path, "utf8"));
-    return isBotState(value) ? value : undefined;
+    return isBotState(value) ? migrateBotState(value) : undefined;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT" || error instanceof SyntaxError) {
       return undefined;

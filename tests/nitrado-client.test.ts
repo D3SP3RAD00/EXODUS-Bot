@@ -119,6 +119,54 @@ describe("NitradoReadOnlyClient official API contract", () => {
     expect(fetchMock.mock.calls[2]?.[0]).toContain("dir=%2Fgames%2Fdayz");
   });
 
+  it("confines configured discovery to the exact directory and never traverses child directories", async () => {
+    const fetchMock = sequencedFetch([
+      details(),
+      listing([
+        { type: "dir", path: "/logs/archive", name: "archive", modified_at: 999 },
+        adm("/logs/current.ADM", 100),
+      ]),
+      ticket(),
+      content(),
+    ]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+
+    await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("dir=%2Flogs");
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("archive"))).toBe(false);
+  });
+
+  it("selects the newest valid ADM deterministically when several files exist", async () => {
+    const fetchMock = sequencedFetch([
+      details(),
+      listing([
+        adm("/logs/older.ADM", 10),
+        adm("/logs/tie-b.ADM", 20),
+        adm("/logs/tie-a.ADM", 20),
+        { type: "file", path: "/logs/newer.txt", name: "newer.txt", size: 1, modified_at: 30 },
+      ]),
+      ticket(),
+      content(),
+    ]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+
+    await client.downloadLatestAdmLog();
+    expect(fetchMock.mock.calls[2]?.[0]).toContain("file=%2Flogs%2Ftie-a.ADM");
+  });
+
+  it("rejects entries outside the configured directory", async () => {
+    const fetchMock = sequencedFetch([details(), listing([adm("/other/current.ADM", 10)])]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+    await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_UNSAFE_PATH" });
+  });
+
+  it("returns a stable code when the configured directory does not exist", async () => {
+    const fetchMock = sequencedFetch([details(), jsonResponse({ status: "error" }, 404)]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+    await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_INVALID_DIRECTORY" });
+  });
+
   it("rejects a service that is not the configured Xbox DayZ server", async () => {
     const fetchMock = sequencedFetch([details({ game: "mc", game_human: "Minecraft" })]);
     const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);

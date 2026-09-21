@@ -32,8 +32,7 @@ export class RuntimeLifecycle {
     } catch (error) {
       if (!(error instanceof DOMException && error.name === "AbortError")) {
         this.options.logger.error("poller_shutdown_failed", {
-          errorName: error instanceof Error ? error.name : "UnknownError",
-          errorMessage: error instanceof Error ? error.message : String(error),
+          code: "BACKGROUND_TASK_SHUTDOWN_FAILED",
         });
       }
     } finally {

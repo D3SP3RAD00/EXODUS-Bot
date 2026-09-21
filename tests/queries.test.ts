@@ -8,7 +8,8 @@ describe("Discord query messages", () => {
   it("returns deterministic empty-state status and player messages", () => {
     const state = createEmptyState();
     expect(statusMessage(state)).toContain("Tracked players: 0");
-    expect(statusMessage(state)).toContain("Waiting for Nitrado adapter connection");
+    expect(statusMessage(state)).toContain("ADM state: never");
+    expect(statusMessage(state)).toContain("Last successful ingestion: None yet");
     expect(playersMessage(state)).toBe("No players currently have an active session.");
   });
 

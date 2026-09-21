@@ -226,6 +226,31 @@ export class NitradoReadOnlyClient implements NitradoClient {
   private async findNewestAdmLog(
     signal?: AbortSignal
   ): Promise<Required<Pick<NitradoFileEntry, "path" | "size" | "modified_at">>> {
+    if (this.logDirectory) {
+      const entries = await this.listDirectory(this.logDirectory, signal);
+      if (entries.length > this.options.discoveryMaxEntries) {
+        throw new NitradoClientError(
+          "NITRADO_DISCOVERY_LIMIT",
+          "Nitrado log discovery exceeded the configured entry limit."
+        );
+      }
+      const logs: Array<Required<Pick<NitradoFileEntry, "path" | "size" | "modified_at">>> = [];
+      for (const entry of entries) {
+        const path = canonicalAbsolutePath(entry.path);
+        if (!path || posix.dirname(path) !== this.logDirectory || posix.basename(path) !== entry.name) {
+          throw new NitradoClientError("NITRADO_UNSAFE_PATH", "Nitrado returned a path outside the configured directory.");
+        }
+        if (
+          entry.type === "file" && path.toLowerCase().endsWith(".adm") &&
+          typeof entry.size === "number" && Number.isSafeInteger(entry.size) && entry.size >= 0 &&
+          typeof entry.modified_at === "number" && Number.isFinite(entry.modified_at)
+        ) {
+          logs.push({ path, size: entry.size, modified_at: entry.modified_at });
+        }
+      }
+      return selectNewestAdm(logs);
+    }
+
     const queue: Array<{ directory?: string; depth: number; root?: string }> = this.logDirectory
       ? [{ directory: this.logDirectory, depth: 0, root: this.logDirectory }]
       : [{ depth: 0 }];
@@ -268,13 +293,7 @@ export class NitradoReadOnlyClient implements NitradoClient {
       }
     }
 
-    const newest = logs.sort((left, right) =>
-      right.modified_at - left.modified_at || right.path.localeCompare(left.path)
-    )[0];
-    if (!newest) {
-      throw new NitradoClientError("NITRADO_ADM_NOT_FOUND", "No ADM log is currently available on the server.");
-    }
-    return newest;
+    return selectNewestAdm(logs);
   }
 
   private async listDirectory(directory: string | undefined, signal?: AbortSignal): Promise<NitradoFileEntry[]> {
@@ -441,6 +460,12 @@ export class NitradoReadOnlyClient implements NitradoClient {
           throw new NitradoClientError("NITRADO_UNAVAILABLE", "Nitrado is temporarily unavailable.", true);
         }
         if (!response.ok) {
+          if (response.status === 404 && operation === "file_list" && this.logDirectory) {
+            throw new NitradoClientError(
+              "NITRADO_INVALID_DIRECTORY",
+              "The configured Xbox ADM directory is unavailable."
+            );
+          }
           throw new NitradoClientError(
             "NITRADO_REQUEST_FAILED",
             `Nitrado rejected the ${operation} request with HTTP ${response.status}.`
@@ -534,4 +559,16 @@ export class NitradoReadOnlyClient implements NitradoClient {
   private abortedError(): NitradoClientError {
     return new NitradoClientError("NITRADO_ABORTED", "The Nitrado operation was stopped.");
   }
+}
+
+function selectNewestAdm(
+  logs: Array<Required<Pick<NitradoFileEntry, "path" | "size" | "modified_at">>>
+): Required<Pick<NitradoFileEntry, "path" | "size" | "modified_at">> {
+  const newest = logs.sort((left, right) =>
+    right.modified_at - left.modified_at || left.path.localeCompare(right.path)
+  )[0];
+  if (!newest) {
+    throw new NitradoClientError("NITRADO_ADM_NOT_FOUND", "No ADM log is currently available on the server.");
+  }
+  return newest;
 }

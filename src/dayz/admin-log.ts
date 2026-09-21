@@ -18,8 +18,18 @@ export type AdminLogEvent =
   | (PlayerEventBase & { type: "player_connecting" })
   | (PlayerEventBase & { type: "player_connected" })
   | (PlayerEventBase & { type: "player_snapshot" })
-  | (PlayerEventBase & { type: "player_emote"; emote: string })
-  | (PlayerEventBase & { type: "player_disconnected" });
+  | (PlayerEventBase & { type: "player_emote"; emote: string; item?: string })
+  | (PlayerEventBase & { type: "player_disconnected" })
+  | {
+    type: "player_count";
+    fingerprint: string;
+    occurrence: number;
+    lineNumber: number;
+    logDate: string;
+    occurredAt: string;
+    count: number;
+    raw: string;
+  };
 
 export type IgnoredAdminLogLine = { lineNumber: number; raw: string };
 
@@ -34,6 +44,7 @@ export type ParsedAdminLog = {
 const headerPattern = /AdminLog started on (\d{4})-(\d{2})-(\d{2}) at (\d{2}:\d{2}:\d{2})/;
 const timedLinePattern = /^(\d{2}:\d{2}:\d{2}) \| (.+)$/;
 const playerPattern = /^Player "([^"]+)" \(id=([A-Fa-f0-9]+)(?: pos=<([^>]+)>)?\)(?: (.*))?$/;
+const playerCountPattern = /^##### PlayerList log: (\d+) players?$/;
 
 function parseClockSeconds(value: string): number | undefined {
   const match = /^(\d{2}):(\d{2}):(\d{2})$/.exec(value);
@@ -90,15 +101,21 @@ function classifyPlayerEvent(action: string | undefined):
   | { type: "player_connecting" }
   | { type: "player_connected" }
   | { type: "player_snapshot" }
-  | { type: "player_emote"; emote: string }
+  | { type: "player_emote"; emote: string; item?: string }
   | { type: "player_disconnected" }
   | undefined {
   if (!action) return { type: "player_snapshot" };
   if (action === "is connecting") return { type: "player_connecting" };
   if (action === "is connected") return { type: "player_connected" };
   if (action === "has been disconnected") return { type: "player_disconnected" };
-  const emote = /^performed (\S+)$/.exec(action);
-  if (emote?.[1]) return { type: "player_emote", emote: emote[1] };
+  const emote = /^performed (\S+)(?: with (\S+))?$/.exec(action);
+  if (emote?.[1]) {
+    return {
+      type: "player_emote",
+      emote: emote[1],
+      ...(emote[2] ? { item: emote[2] } : {}),
+    };
+  }
   return undefined;
 }
 
@@ -137,6 +154,33 @@ export function parseAdminLog(input: string): ParsedAdminLog {
     }
     if (previousClockSeconds - clockSeconds > 43_200) dayOffset += 1;
     previousClockSeconds = clockSeconds;
+    const playerCount = playerCountPattern.exec(payload);
+    if (playerCount?.[1]) {
+      const count = Number(playerCount[1]);
+      if (!Number.isSafeInteger(count)) {
+        ignoredLines.push({ lineNumber, raw: line });
+        return;
+      }
+      const fingerprint = eventFingerprint(logDate, line);
+      const occurrence = (fingerprintOccurrences.get(fingerprint) ?? 0) + 1;
+      fingerprintOccurrences.set(fingerprint, occurrence);
+      const occurredAt = utcTimestamp(logDate, clockSeconds, dayOffset);
+      if (!occurredAt) {
+        ignoredLines.push({ lineNumber, raw: line });
+        return;
+      }
+      events.push({
+        type: "player_count",
+        fingerprint,
+        occurrence,
+        lineNumber,
+        logDate,
+        occurredAt,
+        count,
+        raw: line,
+      });
+      return;
+    }
     if (payload.startsWith("#####")) return;
     const player = playerPattern.exec(payload);
     if (!player?.[1] || !player[2]) {

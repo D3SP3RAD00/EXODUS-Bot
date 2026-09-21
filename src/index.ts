@@ -4,6 +4,9 @@ import { NitradoAdmLogAdapter } from "./adapters/nitrado-adm-log-adapter.js";
 import { loadConfig } from "./config.js";
 import { AdmIngestor } from "./dayz/adm-ingestor.js";
 import { CommandHandler } from "./discord/command-handler.js";
+import { registerGuildCommands } from "./discord/command-registration.js";
+import { configureFeedSubscriptions } from "./discord/feed-service.js";
+import { DiscordOutboxDispatcher, DiscordRestFeedSender } from "./discord/outbox-dispatcher.js";
 import { NitradoAdmPoller } from "./nitrado/nitrado-poller.js";
 import { NitradoReadOnlyClient } from "./nitrado/nitrado-readonly-client.js";
 import { StructuredConsoleLogger } from "./observability/logger.js";
@@ -28,10 +31,9 @@ async function start(): Promise<void> {
 
   for (const signal of ["SIGINT", "SIGTERM"] as const) {
     process.once(signal, () => {
-      void lifecycle.shutdown(signal).catch((error) => {
+      void lifecycle.shutdown(signal).catch(() => {
         logger.error("application_shutdown_failed", {
-          errorName: error instanceof Error ? error.name : "UnknownError",
-          errorMessage: error instanceof Error ? error.message : String(error),
+          code: "APPLICATION_SHUTDOWN_FAILED",
         });
         process.exitCode = 1;
       });
@@ -40,6 +42,14 @@ async function start(): Promise<void> {
 
   try {
     const storage = new JsonFileStorage(storageFilePath(config.DATA_DIRECTORY));
+    await configureFeedSubscriptions(storage, {
+      ...(config.DISCORD_JOIN_LEAVE_CHANNEL_ID ? { join_leave: config.DISCORD_JOIN_LEAVE_CHANNEL_ID } : {}),
+      ...(config.DISCORD_PLAYER_COUNT_CHANNEL_ID ? { player_count: config.DISCORD_PLAYER_COUNT_CHANNEL_ID } : {}),
+      ...(config.DISCORD_KILLFEED_CHANNEL_ID ? { killfeed: config.DISCORD_KILLFEED_CHANNEL_ID } : {}),
+      ...(config.DISCORD_RAID_BUILD_CHANNEL_ID ? { raid_build: config.DISCORD_RAID_BUILD_CHANNEL_ID } : {}),
+      ...(config.DISCORD_BOT_STATUS_CHANNEL_ID ? { bot_status: config.DISCORD_BOT_STATUS_CHANNEL_ID } : {}),
+      ...(config.DISCORD_ADMIN_AUDIT_CHANNEL_ID ? { admin_audit: config.DISCORD_ADMIN_AUDIT_CHANNEL_ID } : {}),
+    }, new Date().toISOString());
     const commandHandler = new CommandHandler(storage, logger);
     const nitradoClient = new NitradoReadOnlyClient({
       token: config.NITRADO_TOKEN,
@@ -52,7 +62,7 @@ async function start(): Promise<void> {
       discoveryMaxEntries: config.NITRADO_DISCOVERY_MAX_ENTRIES,
       maxDownloadBytes: config.NITRADO_MAX_DOWNLOAD_BYTES,
       downloadHostAllowlist: config.NITRADO_DOWNLOAD_HOSTS.split(",").map((host) => host.trim()).filter(Boolean),
-      ...(config.NITRADO_LOG_DIRECTORY ? { logDirectory: config.NITRADO_LOG_DIRECTORY } : {}),
+      logDirectory: config.NITRADO_LOG_DIRECTORY,
     });
     const ingestor = new AdmIngestor(storage, logger);
     const nitradoSource = new NitradoAdmLogAdapter(nitradoClient);
@@ -60,16 +70,36 @@ async function start(): Promise<void> {
       nitradoSource,
       ingestor,
       logger,
-      config.NITRADO_POLL_INTERVAL_MS
+      config.NITRADO_POLL_INTERVAL_MS,
+      storage
+    );
+    const outboxDispatcher = new DiscordOutboxDispatcher(
+      storage,
+      new DiscordRestFeedSender(config.DISCORD_BOT_TOKEN),
+      logger
     );
 
-    client.once(Events.ClientReady, (readyClient) => {
+    try {
+      await registerGuildCommands({
+        token: config.DISCORD_BOT_TOKEN,
+        applicationId: config.DISCORD_APPLICATION_ID,
+        guildId: config.DISCORD_GUILD_ID,
+        logger,
+      });
+    } catch {
+      logger.warn("application_continuing_without_command_refresh", {
+        code: "DISCORD_COMMAND_REGISTRATION_FAILED",
+      });
+    }
+
+    client.once(Events.ClientReady, () => {
       logger.info("application_started", {
-        botUser: readyClient.user.tag,
-        dataDirectory: config.DATA_DIRECTORY,
         pollIntervalMs: config.NITRADO_POLL_INTERVAL_MS,
       });
-      lifecycle.attachPoller(nitradoPoller.start(abortController.signal));
+      lifecycle.attachPoller(Promise.all([
+        nitradoPoller.start(abortController.signal),
+        outboxDispatcher.start(abortController.signal),
+      ]).then(() => undefined));
     });
 
     client.on(Events.InteractionCreate, async (interaction) => {
@@ -77,9 +107,7 @@ async function start(): Promise<void> {
       await commandHandler.handle(interaction);
     });
 
-    logger.info("application_starting", {
-      dataDirectory: config.DATA_DIRECTORY,
-    });
+    logger.info("application_starting");
     await client.login(config.DISCORD_BOT_TOKEN);
   } catch (error) {
     await lifecycle.shutdown("startup_failure");
@@ -91,8 +119,9 @@ try {
   await start();
 } catch (error) {
   logger.error("application_start_failed", {
-    errorName: error instanceof Error ? error.name : "UnknownError",
-    errorMessage: error instanceof Error ? error.message : String(error),
+    code: error instanceof Error && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "APPLICATION_START_FAILED",
   });
   process.exitCode = 1;
 }

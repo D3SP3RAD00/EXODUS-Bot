@@ -1,10 +1,13 @@
 import { createHash } from "node:crypto";
 
 import type { AdmLogSnapshot, AdmLogSource } from "../adapters/adm-log-source.js";
+import { AdminFacingError } from "../core/errors.js";
 import { applyAdminLogEvent, closeOpenSessionsForRestart } from "../core/session-service.js";
+import { recordSuccessfulIngestion } from "../diagnostics/ingestion-diagnostics.js";
+import { armFeedSubscriptions, routeAdminLogEvent } from "../discord/feed-service.js";
 import type { Logger } from "../observability/logger.js";
 import type { Storage } from "../storage/storage.js";
-import { completeAdmLines, hashAdmLines, parseAdminLog } from "./admin-log.js";
+import { completeAdmLines, hashAdmLines, parseAdminLog, type ParsedAdminLog } from "./admin-log.js";
 
 export type IngestionResult = {
   sourceId: string;
@@ -16,9 +19,9 @@ export type IngestionResult = {
   truncatedSnapshot: boolean;
 };
 
-function eventKey(sourceId: string, logStartedAt: string, fingerprint: string, occurrence: number): string {
+function eventKey(logStartedAt: string, fingerprint: string, occurrence: number): string {
   return createHash("sha256")
-    .update(`${sourceId}|${logStartedAt}|${fingerprint}|${occurrence}`)
+    .update(`${logStartedAt}|${fingerprint}|${occurrence}`)
     .digest("hex");
 }
 
@@ -30,7 +33,12 @@ export class AdmIngestor {
   }
 
   async ingest(snapshot: AdmLogSnapshot): Promise<IngestionResult> {
-    const parsed = parseAdminLog(snapshot.content);
+    let parsed: ParsedAdminLog;
+    try {
+      parsed = parseAdminLog(snapshot.content);
+    } catch {
+      throw new AdminFacingError("ADM_MALFORMED", "The downloaded ADM content could not be parsed safely.");
+    }
     const lines = completeAdmLines(snapshot.content);
     const result = await this.storage.transaction((state) => {
       const checkpoint = state.checkpoints[snapshot.sourceId];
@@ -62,12 +70,23 @@ export class AdmIngestor {
       let processedEvents = 0;
       let duplicateEvents = 0;
       for (const event of parsed.events.filter((entry) => entry.lineNumber >= firstUnprocessedLine)) {
-        const key = eventKey(snapshot.sourceId, parsed.startedAt, event.fingerprint, event.occurrence);
+        const key = eventKey(parsed.startedAt, event.fingerprint, event.occurrence);
         if (state.processedEventKeys[key]) {
           duplicateEvents += 1;
           continue;
         }
         applyAdminLogEvent(state, event);
+        if (event.type === "player_emote") {
+          state.emotes[key] = {
+            eventKey: key,
+            playerId: event.playerId,
+            playerName: event.playerName,
+            occurredAt: event.occurredAt,
+            emote: event.emote,
+            ...(event.item ? { item: event.item } : {}),
+          };
+        }
+        routeAdminLogEvent(state, event, key, snapshot.observedAt);
         state.processedEventKeys[key] = event.occurredAt;
         processedEvents += 1;
       }
@@ -78,6 +97,8 @@ export class AdmIngestor {
         logStartedAt: parsed.startedAt,
         updatedAt: snapshot.observedAt,
       };
+      recordSuccessfulIngestion(state, snapshot.observedAt, parsed.ignoredLines.length, processedEvents);
+      armFeedSubscriptions(state);
       return {
         sourceId: snapshot.sourceId,
         processedEvents,
@@ -89,14 +110,19 @@ export class AdmIngestor {
       };
     });
     if (result.truncatedSnapshot) {
-      this.logger.warn("adm_ingestion_truncated_snapshot", {
-        sourceId: result.sourceId,
-      });
+      this.logger.warn("adm_ingestion_truncated_snapshot", { code: "ADM_TRUNCATED_SNAPSHOT" });
     }
     if (result.malformedLines > 0) {
-      this.logger.warn("adm_ingestion_malformed_lines", { sourceId: result.sourceId, count: result.malformedLines });
+      this.logger.warn("adm_ingestion_malformed_lines", { count: result.malformedLines });
     }
-    this.logger.info("adm_ingestion_completed", result);
+    this.logger.info("adm_ingestion_completed", {
+      processedEvents: result.processedEvents,
+      duplicateEvents: result.duplicateEvents,
+      malformedLines: result.malformedLines,
+      checkpointReset: result.checkpointReset,
+      incompleteSessionsClosed: result.incompleteSessionsClosed,
+      truncatedSnapshot: result.truncatedSnapshot,
+    });
     return result;
   }
 }

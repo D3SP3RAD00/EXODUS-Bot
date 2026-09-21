@@ -16,10 +16,10 @@ export class NitradoAdmLogAdapter implements AdmLogSource {
       return { sourceId: `nitrado:${file.id}`, content: file.content, observedAt: file.fetchedAt };
     } catch (error) {
       if (signal?.aborted) throw error;
+      if (typeof error === "object" && error !== null && "code" in error) throw error;
       throw new AdminFacingError(
         "NITRADO_ADM_FETCH_FAILED",
-        "The latest ADM log could not be downloaded from Nitrado.",
-        { cause: error }
+        "The latest ADM log could not be downloaded from Nitrado."
       );
     }
   }

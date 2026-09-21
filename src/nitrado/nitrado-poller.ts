@@ -2,7 +2,9 @@ import { createHash } from "node:crypto";
 
 import type { AdmLogSource } from "../adapters/adm-log-source.js";
 import type { AdmIngestor } from "../dayz/adm-ingestor.js";
+import { recordIngestionError, recordUnchangedIngestion, safeErrorCode } from "../diagnostics/ingestion-diagnostics.js";
 import type { Logger } from "../observability/logger.js";
+import type { Storage } from "../storage/storage.js";
 
 export type PollResult = "ingested" | "unchanged";
 
@@ -16,6 +18,8 @@ export class NitradoAdmPoller {
     private readonly ingestor: AdmIngestor,
     private readonly logger: Logger,
     private readonly intervalMs: number,
+    private readonly diagnosticsStorage?: Storage,
+    private readonly now: () => Date = () => new Date(),
     private readonly wait: (milliseconds: number, signal?: AbortSignal) => Promise<void> =
       (milliseconds, signal) => new Promise((resolve) => {
         if (signal?.aborted) {
@@ -38,7 +42,12 @@ export class NitradoAdmPoller {
 
   pollOnce(signal?: AbortSignal): Promise<PollResult> {
     if (this.inFlight) return this.inFlight;
-    const operation = this.executePoll(signal);
+    const operation = this.executePoll(signal).catch(async (error: unknown) => {
+      if (this.diagnosticsStorage && !signal?.aborted) {
+        await recordIngestionError(this.diagnosticsStorage, error, this.now().toISOString());
+      }
+      throw error;
+    });
     this.inFlight = operation;
     void operation.finally(() => {
       if (this.inFlight === operation) this.inFlight = undefined;
@@ -52,7 +61,10 @@ export class NitradoAdmPoller {
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const contentHash = createHash("sha256").update(snapshot.content).digest("hex");
     if (contentHash === this.lastContentHash) {
-      this.logger.info("nitrado_adm_unchanged", { sourceId: snapshot.sourceId });
+      if (this.diagnosticsStorage) {
+        await recordUnchangedIngestion(this.diagnosticsStorage, snapshot.observedAt);
+      }
+      this.logger.info("nitrado_adm_unchanged", { code: "ADM_UNCHANGED" });
       return "unchanged";
     }
     await this.ingestor.ingest(snapshot);
@@ -69,9 +81,9 @@ export class NitradoAdmPoller {
           await this.pollOnce(signal);
         } catch (error) {
           if (signal?.aborted) break;
+          const code = safeErrorCode(error);
           this.logger.error("nitrado_adm_poll_failed", {
-            errorName: error instanceof Error ? error.name : "UnknownError",
-            errorMessage: error instanceof Error ? error.message : String(error),
+            code,
           });
         }
         if (!signal?.aborted) await this.wait(this.intervalMs, signal);

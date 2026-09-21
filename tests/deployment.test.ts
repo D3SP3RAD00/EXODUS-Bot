@@ -11,7 +11,7 @@ describe("production deployment artifacts", () => {
     expect(dockerfile).toContain("FROM node:22-bookworm-slim AS runtime");
     expect(dockerfile).toContain("npm ci --omit=dev --ignore-scripts");
     expect(dockerfile).toContain("USER node");
-    expect(dockerfile).toContain('VOLUME ["/data"]');
+    expect(dockerfile).toContain("DATA_DIRECTORY=/data");
     expect(dockerfile).toContain("STOPSIGNAL SIGTERM");
     expect(dockerfile).toContain('ENTRYPOINT ["exodus-entrypoint"]');
     expect(dockerfile).toContain('CMD ["node", "dist/index.js"]');
@@ -32,5 +32,16 @@ describe("production deployment artifacts", () => {
     expect(entrypoint).toContain('exec gosu node "$@"');
     expect(entrypoint).toContain('exec "$@"');
     expect(packageJson.scripts.start).toBe("node dist/index.js");
+  });
+
+  it("registers guild commands automatically while preserving the standalone script", async () => {
+    const entrypoint = await readFile(resolve(root, "src/index.ts"), "utf8");
+    const packageJson = JSON.parse(await readFile(resolve(root, "package.json"), "utf8")) as {
+      scripts: Record<string, string>;
+    };
+    expect(entrypoint).toContain("await registerGuildCommands({");
+    expect(entrypoint.indexOf("await registerGuildCommands({"))
+      .toBeLessThan(entrypoint.indexOf("await client.login(config.DISCORD_BOT_TOKEN)"));
+    expect(packageJson.scripts["commands:register"]).toBe("tsx src/discord/register-commands.ts");
   });
 });
