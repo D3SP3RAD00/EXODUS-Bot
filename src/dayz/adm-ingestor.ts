@@ -97,7 +97,13 @@ export class AdmIngestor {
         logStartedAt: parsed.startedAt,
         updatedAt: snapshot.observedAt,
       };
-      recordSuccessfulIngestion(state, snapshot.observedAt, parsed.ignoredLines.length, processedEvents);
+      recordSuccessfulIngestion(
+        state,
+        snapshot.observedAt,
+        parsed.ignoredLines.length,
+        processedEvents,
+        snapshot.discovery
+      );
       armFeedSubscriptions(state);
       return {
         sourceId: snapshot.sourceId,

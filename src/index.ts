@@ -62,7 +62,7 @@ async function start(): Promise<void> {
       discoveryMaxEntries: config.NITRADO_DISCOVERY_MAX_ENTRIES,
       maxDownloadBytes: config.NITRADO_MAX_DOWNLOAD_BYTES,
       downloadHostAllowlist: config.NITRADO_DOWNLOAD_HOSTS.split(",").map((host) => host.trim()).filter(Boolean),
-      logDirectory: config.NITRADO_LOG_DIRECTORY,
+      ...(config.NITRADO_LOG_DIRECTORY ? { logDirectory: config.NITRADO_LOG_DIRECTORY } : {}),
     });
     const ingestor = new AdmIngestor(storage, logger);
     const nitradoSource = new NitradoAdmLogAdapter(nitradoClient);

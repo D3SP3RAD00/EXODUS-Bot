@@ -51,9 +51,14 @@ token into Discord, chat, GitHub, source files, build logs, or deployment comman
 `NITRADO_SERVICE_ID` to the numeric service ID for the Xbox DayZ server. The client refuses to browse
 files unless Nitrado identifies that exact service as DayZ on Xbox with file browsing available.
 
-`NITRADO_LOG_DIRECTORY` defaults to the verified Xbox ADM directory `/dayzxb/config`. When a directory
-is configured, discovery is confined to that exact directory and deterministically selects the newest
-valid `.ADM` file. Poll intervals, request timeouts, retry limits,
+`NITRADO_LOG_DIRECTORY` is optional and has no default. When unset, the client performs bounded
+recursive discovery through the API-visible filesystem. It validates every bounded ADM candidate and
+deterministically chooses the newest valid log by parsed `AdminLog started on` time, then safe API
+modification metadata and canonical path. Empty or malformed candidates are rejected. When a directory
+is explicitly configured, discovery remains confined to that exact API path and never escapes it.
+The path shown in Nitrado's web interface may not be the path exposed by the API, so do not copy a web
+path into this variable unless it has been independently verified through the API. Poll intervals,
+request timeouts, retry limits,
 exponential backoff with jitter, discovery bounds, maximum download size, and permitted download
 hosts are configurable in `.env.example`. Keep `NITRADO_DOWNLOAD_HOSTS` restricted to the exact
 Nitrado-owned hosts (or the documented `*.nitrado.net` pattern) used by your service.
@@ -100,7 +105,8 @@ bodies are never published. Newly enabled feeds begin after the active ingestion
 do not replay historical messages. Pending notifications and delivery IDs persist in `DATA_DIRECTORY`
 and Discord nonce enforcement makes retries idempotent.
 
-`/status` reports safe ingestion state, last successful ingestion time, ignored-line count, and a
-stable internal error code. It never includes remote error bodies, paths, IDs, coordinates, or URLs.
+`/status` reports safe ingestion state, last successful ingestion time, ignored-line count, candidate
+discovery/evaluation/validation/rejection counts, and a stable internal error code. It never includes
+remote error bodies, paths, IDs, coordinates, or URLs.
 
 For hosted production setup, follow the step-by-step [Railway deployment guide](docs/railway-deployment.md).

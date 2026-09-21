@@ -13,9 +13,9 @@ const optionalDiscordSnowflake = z.preprocess(
   discordSnowflake.optional()
 );
 
-const xboxLogDirectory = z.preprocess(
-  (value) => typeof value === "string" && value.trim() !== "" ? value : "/dayzxb/config",
-  z.string().min(1)
+const optionalLogDirectory = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  z.string().min(1).optional()
 );
 
 const positiveIntegerString = z.string().regex(/^[1-9]\d*$/).transform((value, context) => {
@@ -47,7 +47,7 @@ const configSchema = z.object({
   DATA_DIRECTORY: requiredString.refine(isAbsolute, "Must be an absolute path."),
   NITRADO_TOKEN: requiredString,
   NITRADO_SERVICE_ID: positiveIntegerString,
-  NITRADO_LOG_DIRECTORY: xboxLogDirectory,
+  NITRADO_LOG_DIRECTORY: optionalLogDirectory,
   NITRADO_DOWNLOAD_HOSTS: z.string().min(1).default("nitrado.net,*.nitrado.net"),
   NITRADO_MAX_DOWNLOAD_BYTES: integerEnvironment(1).default(16_777_216),
   NITRADO_POLL_INTERVAL_MS: integerEnvironment(5_000).default(60_000),

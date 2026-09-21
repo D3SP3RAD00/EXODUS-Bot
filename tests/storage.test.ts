@@ -93,7 +93,14 @@ describe("JsonFileStorage", () => {
     const migrated = await new JsonFileStorage(file).read();
     expect(migrated.schemaVersion).toBe(2);
     expect(migrated.players.PRIVATE?.currentName).toBe("ExampleSurvivor");
-    expect(migrated.diagnostics).toEqual({ status: "never", ignoredLineCount: 0 });
+    expect(migrated.diagnostics).toEqual({
+      status: "never",
+      ignoredLineCount: 0,
+      discoveredCandidates: 0,
+      evaluatedCandidates: 0,
+      validCandidates: 0,
+      rejectedCandidates: 0,
+    });
     expect(migrated.discordOutbox).toEqual({});
   });
 });

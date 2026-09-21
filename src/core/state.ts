@@ -55,6 +55,10 @@ export type IngestionDiagnostics = {
   lastSuccessfulIngestionAt?: string;
   lastSafeErrorCode?: string;
   ignoredLineCount: number;
+  discoveredCandidates: number;
+  evaluatedCandidates: number;
+  validCandidates: number;
+  rejectedCandidates: number;
 };
 
 export const feedKinds = [
@@ -115,7 +119,14 @@ export function createEmptyState(): BotState {
     openSessionByPlayer: {},
     processedEventKeys: {},
     checkpoints: {},
-    diagnostics: { status: "never", ignoredLineCount: 0 },
+    diagnostics: {
+      status: "never",
+      ignoredLineCount: 0,
+      discoveredCandidates: 0,
+      evaluatedCandidates: 0,
+      validCandidates: 0,
+      rejectedCandidates: 0,
+    },
     feedSubscriptions: {},
     discordOutbox: {},
     deliveredNotificationKeys: {},
@@ -130,7 +141,18 @@ export function migrateBotState(state: Record<string, unknown>): BotState {
   const migrated = structuredClone(state) as unknown as BotState;
   migrated.schemaVersion = 2;
   migrated.emotes ??= {};
-  migrated.diagnostics ??= { status: "never", ignoredLineCount: 0 };
+  migrated.diagnostics ??= {
+    status: "never",
+    ignoredLineCount: 0,
+    discoveredCandidates: 0,
+    evaluatedCandidates: 0,
+    validCandidates: 0,
+    rejectedCandidates: 0,
+  };
+  migrated.diagnostics.discoveredCandidates ??= 0;
+  migrated.diagnostics.evaluatedCandidates ??= 0;
+  migrated.diagnostics.validCandidates ??= 0;
+  migrated.diagnostics.rejectedCandidates ??= 0;
   migrated.feedSubscriptions ??= {};
   migrated.discordOutbox ??= {};
   migrated.deliveredNotificationKeys ??= {};

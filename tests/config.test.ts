@@ -20,7 +20,7 @@ describe("configuration", () => {
     });
     expect(config.DATA_DIRECTORY).toBe("/persistent/exodus");
     expect(config.NITRADO_SERVICE_ID).toBe(1_234_567);
-    expect(config.NITRADO_LOG_DIRECTORY).toBe("/dayzxb/config");
+    expect(config.NITRADO_LOG_DIRECTORY).toBeUndefined();
     expect(config.NITRADO_POLL_INTERVAL_MS).toBe(60_000);
     expect(config.NITRADO_MAX_DOWNLOAD_BYTES).toBe(16_777_216);
   });
@@ -70,5 +70,12 @@ describe("configuration", () => {
       ...requiredEnvironment,
       DISCORD_JOIN_LEAVE_CHANNEL_ID: "not-a-channel",
     })).toThrow();
+  });
+
+  it("preserves an explicitly configured API-visible log directory", () => {
+    expect(loadConfig({
+      ...requiredEnvironment,
+      NITRADO_LOG_DIRECTORY: "/api-visible/logs",
+    }).NITRADO_LOG_DIRECTORY).toBe("/api-visible/logs");
   });
 });

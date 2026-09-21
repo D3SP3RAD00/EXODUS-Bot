@@ -36,6 +36,7 @@ export function statusMessage(state: BotState): string {
     `ADM state: ${diagnostics.status}`,
     `Last successful ingestion: ${diagnostics.lastSuccessfulIngestionAt ?? "None yet"}`,
     `Parser ignored lines: ${diagnostics.ignoredLineCount}`,
+    `ADM candidates: ${diagnostics.discoveredCandidates} discovered, ${diagnostics.evaluatedCandidates} evaluated, ${diagnostics.validCandidates} valid, ${diagnostics.rejectedCandidates} rejected`,
     `Last safe error: ${diagnostics.lastSafeErrorCode ?? "None"}`,
   ].join("\n");
 }

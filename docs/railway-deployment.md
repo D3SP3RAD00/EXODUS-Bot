@@ -40,7 +40,6 @@ the corresponding provider; do not paste those values anywhere else.
 | `NITRADO_TOKEN` | The read-only, service-scoped Nitrado token |
 | `NITRADO_SERVICE_ID` | The numeric ID of the intended Xbox DayZ service |
 | `DATA_DIRECTORY` | `/data` |
-| `NITRADO_LOG_DIRECTORY` | `/dayzxb/config` |
 
 Also add `RAILWAY_RUN_UID=0`. Railway mounts volumes as root, so this platform setting lets the
 container entrypoint correct `/data` ownership. The entrypoint immediately drops privileges; the
@@ -89,7 +88,7 @@ screen only when needed:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `NITRADO_LOG_DIRECTORY` | Exact Xbox ADM directory; discovery is confined to it | `/dayzxb/config` |
+| `NITRADO_LOG_DIRECTORY` | Optional exact API-visible ADM directory; leave blank for bounded recursive discovery | blank |
 | `NITRADO_DOWNLOAD_HOSTS` | Comma-separated HTTPS download-host allowlist | `nitrado.net,*.nitrado.net` |
 | `NITRADO_MAX_DOWNLOAD_BYTES` | Maximum ADM response size | `16777216` |
 | `NITRADO_POLL_INTERVAL_MS` | Delay between completed polls | `60000` |
@@ -102,6 +101,10 @@ screen only when needed:
 
 Keep the download-host allowlist limited to official Nitrado-owned hosts. The client refuses HTTP,
 redirects, unlisted hosts, oversized or partial files, HTML error pages, and malformed ADM content.
+Do not assume that a directory shown in Nitrado's web interface—such as `/dayzxb/config`—is also visible
+at that path through the API. Leave `NITRADO_LOG_DIRECTORY` blank unless its exact API-visible path has
+been verified. An explicitly configured directory is strictly confined and will not fall back outside
+that directory if it contains no ADM files.
 
 ## First deployment and verification
 
