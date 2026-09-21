@@ -9,6 +9,10 @@ import {
 const TOKEN = "synthetic-nitrado-token-for-tests";
 const CONTENT = "AdminLog started on 2026-09-20 at 10:00:00\n";
 
+function admContent(startedAt: string, suffix = ""): string {
+  return `AdminLog started on ${startedAt.replace("T", " at ")}\n${suffix}`;
+}
+
 const options: NitradoReadOnlyClientOptions = {
   token: TOKEN,
   serviceId: 12345,
@@ -84,6 +88,8 @@ describe("NitradoReadOnlyClient official API contract", () => {
       ]),
       ticket(),
       content(),
+      ticket(),
+      content(),
     ]);
     const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch, async () => {}, () =>
       new Date("2026-09-20T12:00:00Z")
@@ -117,6 +123,120 @@ describe("NitradoReadOnlyClient official API contract", () => {
 
     await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
     expect(fetchMock.mock.calls[2]?.[0]).toContain("dir=%2Fgames%2Fdayz");
+  });
+
+  it("does not assume the web-interface path and discovers an API-visible log when the directory is unset", async () => {
+    const configuredFetch = sequencedFetch([details(), listing([])]);
+    await expect(new NitradoReadOnlyClient(
+      { ...options, logDirectory: "/dayzxb/config" },
+      configuredFetch as typeof fetch
+    ).downloadLatestAdmLog()).rejects.toMatchObject({
+      code: "NITRADO_ADM_NOT_FOUND",
+      discovery: { discovered: 0, evaluated: 0, valid: 0, rejected: 0 },
+    });
+
+    const automaticOptions = { ...options };
+    delete automaticOptions.logDirectory;
+    const automaticFetch = sequencedFetch([
+      details(),
+      listing([{ type: "dir", path: "/api-visible", name: "api-visible" }]),
+      listing([adm("/api-visible/current.ADM", 10)]),
+      ticket(),
+      content(),
+    ]);
+    const selected = await new NitradoReadOnlyClient(
+      automaticOptions,
+      automaticFetch as typeof fetch
+    ).downloadLatestAdmLog();
+    expect(selected.content).toBe(CONTENT);
+    expect(automaticFetch.mock.calls.some((call) => String(call[0]).includes("dayzxb%2Fconfig"))).toBe(false);
+  });
+
+  it("confines configured discovery to the exact directory and never traverses child directories", async () => {
+    const fetchMock = sequencedFetch([
+      details(),
+      listing([
+        { type: "dir", path: "/logs/archive", name: "archive", modified_at: 999 },
+        adm("/logs/current.ADM", 100),
+      ]),
+      ticket(),
+      content(),
+    ]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+
+    await expect(client.downloadLatestAdmLog()).resolves.toMatchObject({ content: CONTENT });
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls[1]?.[0]).toContain("dir=%2Flogs");
+    expect(fetchMock.mock.calls.some((call) => String(call[0]).includes("archive"))).toBe(false);
+  });
+
+  it("rejects empty, malformed, and stale candidates from outranking the newest valid AdminLog", async () => {
+    const malformed = "not an admin log\n";
+    const stale = admContent("2026-09-19T23:00:00");
+    const current = admContent("2026-09-21T07:00:00");
+    const fetchMock = sequencedFetch([
+      details(),
+      listing([
+        adm("/logs/empty.ADM", 400, 0),
+        adm("/logs/malformed.ADM", 300, Buffer.byteLength(malformed)),
+        adm("/logs/stale.ADM", 200, Buffer.byteLength(stale)),
+        adm("/logs/current.ADM", 100, Buffer.byteLength(current)),
+      ]),
+      ticket(),
+      content(malformed),
+      ticket(),
+      content(stale),
+      ticket(),
+      content(current),
+    ]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+
+    const selected = await client.downloadLatestAdmLog();
+    expect(selected.content).toBe(current);
+    expect(selected.discovery).toEqual({ discovered: 4, evaluated: 4, valid: 2, rejected: 2 });
+    expect(fetchMock.mock.calls[2]?.[0]).toContain("file=%2Flogs%2Fmalformed.ADM");
+    expect(fetchMock.mock.calls[4]?.[0]).toContain("file=%2Flogs%2Fstale.ADM");
+    expect(fetchMock.mock.calls[6]?.[0]).toContain("file=%2Flogs%2Fcurrent.ADM");
+  });
+
+  it("breaks equal parsed-start and metadata ties deterministically by canonical path", async () => {
+    const tied = admContent("2026-09-21T07:00:00");
+    const fetchMock = sequencedFetch([
+      details(),
+      listing([
+        adm("/logs/tie-b.ADM", 20, Buffer.byteLength(tied)),
+        adm("/logs/tie-a.ADM", 20, Buffer.byteLength(tied)),
+      ]),
+      ticket(), content(tied),
+      ticket(), content(tied),
+    ]);
+    const selected = await new NitradoReadOnlyClient(options, fetchMock as typeof fetch).downloadLatestAdmLog();
+    expect(selected.id).toBe("f9e5da3465e8189490c6c03126a09c1d4d0c306deec31f8bc5ab20644716e55c");
+    expect(fetchMock.mock.calls[2]?.[0]).toContain("file=%2Flogs%2Ftie-a.ADM");
+  });
+
+  it("validates API-visible ADM candidates even when optional listing metadata is absent", async () => {
+    const fetchMock = sequencedFetch([
+      details(),
+      listing([{ type: "file", path: "/logs/current.ADM", name: "current.ADM" }]),
+      ticket(),
+      content(),
+    ]);
+    const selected = await new NitradoReadOnlyClient(options, fetchMock as typeof fetch).downloadLatestAdmLog();
+    expect(selected.content).toBe(CONTENT);
+    expect(selected.discovery).toEqual({ discovered: 1, evaluated: 1, valid: 1, rejected: 0 });
+  });
+
+  it("rejects entries outside the configured directory", async () => {
+    const fetchMock = sequencedFetch([details(), listing([adm("/other/current.ADM", 10)])]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+    await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_UNSAFE_PATH" });
+  });
+
+  it("returns a stable code when the configured directory does not exist", async () => {
+    const fetchMock = sequencedFetch([details(), jsonResponse({ status: "error" }, 404)]);
+    const client = new NitradoReadOnlyClient(options, fetchMock as typeof fetch);
+    await expect(client.downloadLatestAdmLog()).rejects.toMatchObject({ code: "NITRADO_INVALID_DIRECTORY" });
   });
 
   it("rejects a service that is not the configured Xbox DayZ server", async () => {

@@ -58,8 +58,28 @@ malformed, or if `DATA_DIRECTORY` is not an absolute path.
 
 The volume preserves `exodus-bot.json` and its atomic-write recovery files. Those contain ADM
 checkpoints, player sessions, accumulated playtime, and the reserved storage areas for future economy
-and faction data. Railway prevents multiple active deployments from mounting the same service volume,
-which also prevents overlapping pollers during redeploys.
+and faction data, plus pending Discord feed messages and their delivery IDs. Railway prevents multiple
+active deployments from mounting the same service volume, which also prevents overlapping pollers
+during redeploys.
+
+## Optional Discord feed channels
+
+In Railway's **Variables** screen, set any feed variable to the destination channel's numeric Discord
+ID. Leave it unset or blank to disable that feed; ingestion continues normally. Never put a real
+channel ID in `.env.example`, source code, documentation, screenshots, logs, chat, or GitHub.
+
+| Variable | Published content |
+| --- | --- |
+| `DISCORD_JOIN_LEAVE_CHANNEL_ID` | Confirmed player joins and leaves |
+| `DISCORD_PLAYER_COUNT_CHANNEL_ID` | Confirmed player-count changes |
+| `DISCORD_KILLFEED_CHANNEL_ID` | Reserved; no messages until a verified format is implemented |
+| `DISCORD_RAID_BUILD_CHANNEL_ID` | Reserved; no messages until a verified format is implemented |
+| `DISCORD_BOT_STATUS_CHANNEL_ID` | Safe ingestion health transitions |
+| `DISCORD_ADMIN_AUDIT_CHANNEL_ID` | Safe operational summaries |
+
+Discord IDs are validated as snowflakes during startup. Give the bot **View Channel** and **Send
+Messages** permission only in each configured destination. Newly enabled feeds start after the active
+ADM checkpoint and do not replay history. Never use a public channel for administrative status.
 
 ## Optional read-only Nitrado settings
 
@@ -68,7 +88,7 @@ screen only when needed:
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `NITRADO_LOG_DIRECTORY` | Known ADM log directory; blank enables bounded discovery | blank |
+| `NITRADO_LOG_DIRECTORY` | Optional exact API-visible ADM directory; leave blank for bounded recursive discovery | blank |
 | `NITRADO_DOWNLOAD_HOSTS` | Comma-separated HTTPS download-host allowlist | `nitrado.net,*.nitrado.net` |
 | `NITRADO_MAX_DOWNLOAD_BYTES` | Maximum ADM response size | `16777216` |
 | `NITRADO_POLL_INTERVAL_MS` | Delay between completed polls | `60000` |
@@ -81,18 +101,28 @@ screen only when needed:
 
 Keep the download-host allowlist limited to official Nitrado-owned hosts. The client refuses HTTP,
 redirects, unlisted hosts, oversized or partial files, HTML error pages, and malformed ADM content.
+Do not assume that a directory shown in Nitrado's web interface—such as `/dayzxb/config`—is also visible
+at that path through the API. Leave `NITRADO_LOG_DIRECTORY` blank unless its exact API-visible path has
+been verified. An explicitly configured directory is strictly confined and will not fall back outside
+that directory if it contains no ADM files.
 
 ## First deployment and verification
 
 1. Review the Variables list and confirm no value was added to GitHub or a committed file.
 2. In Railway, choose **Deploy** for `main` only after the deployment pull request is merged.
 3. Open **Deployments**, select the deployment, and inspect its logs. A healthy start emits structured
-   JSON events named `application_starting` and `application_started`; secrets are redacted.
+   JSON events named `application_starting`, `discord_commands_registered`, and `application_started`;
+   secrets and private identifiers are redacted. Command registration is automatic and idempotent, so
+   no Railway console command is needed.
 4. In Discord, run `/status`, `/players`, and `/playtime` to confirm the bot responds. Empty-server
    responses are expected until ADM events have been ingested.
 5. Restart the Railway service once. Confirm it starts normally and retains state from `/data`.
 6. Keep the replica count at one. Do not create a second Railway service pointing at the same bot,
    Discord application, Nitrado service, or data set.
+
+If automatic command registration reports a stable failure code, verify the three Discord variables
+and the application's guild access. The standalone `npm run commands:register` command remains
+available for controlled recovery, but it should not be required during routine deploys.
 
 On Railway shutdown, `SIGTERM` aborts active read-only requests, waits for the poll loop to stop,
 closes Discord, releases the process lease, and logs `application_shutdown_completed`. Atomic storage

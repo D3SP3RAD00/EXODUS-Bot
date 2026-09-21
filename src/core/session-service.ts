@@ -16,12 +16,14 @@ function duration(startedAt: string, endedAt: string): number {
 }
 
 function createSessionId(event: AdminLogEvent): string {
+  if (event.type === "player_count") throw new Error("Player counts cannot create sessions.");
   return createHash("sha256")
     .update(`${event.playerId}|${event.occurredAt}|${event.fingerprint}|${event.occurrence}`)
     .digest("hex");
 }
 
 function upsertPlayer(state: BotState, event: AdminLogEvent): PlayerRecord {
+  if (event.type === "player_count") throw new Error("Player counts cannot update player records.");
   const existing = state.players[event.playerId];
   if (!existing) {
     const created: PlayerRecord = {
@@ -74,6 +76,7 @@ export function closeOpenSessionsForRestart(state: BotState, restartedAt: string
 }
 
 export function applyAdminLogEvent(state: BotState, event: AdminLogEvent): void {
+  if (event.type === "player_count") return;
   upsertPlayer(state, event);
   if (event.type === "player_connected") {
     closeSession(state, event.playerId, event.occurredAt, "reconnect");

@@ -16,13 +16,15 @@ Deterministic Discord and Xbox DayZ server automation for the !!EXODUS Badlands 
 - Discord bot connection
 - Guild-scoped `/status`, `/players`, and `/playtime` commands
 - Runtime environment validation
-- Xbox/Nitrado ADM parser for connections, snapshots, emotes, and disconnects
+- Xbox/Nitrado ADM parser for connections, snapshots, player counts, emotes, and disconnects
 - Checkpointed, idempotent ADM ingestion with log-rotation detection
 - Persistent player sessions and accumulated playtime
 - Serialized, recoverable atomic JSON storage with reserved economy and faction domains
 - Structured, credential-redacting operational logs
 - Read-only Nitrado ADM discovery and polling isolated behind an adapter interface
 - Railway-ready container lifecycle with persistent storage and single-instance protection
+- Automatic, idempotent guild-command registration during startup
+- Persistent Discord outbox for concise join/leave, player-count, and safe operational feeds
 - Automated parser, restart, reconnect, duplicate, malformed-line, and incomplete-session tests
 
 ## Architecture
@@ -49,9 +51,14 @@ token into Discord, chat, GitHub, source files, build logs, or deployment comman
 `NITRADO_SERVICE_ID` to the numeric service ID for the Xbox DayZ server. The client refuses to browse
 files unless Nitrado identifies that exact service as DayZ on Xbox with file browsing available.
 
-`NITRADO_LOG_DIRECTORY` is optional. When blank, discovery begins at the service's documented home
-directory and follows returned child directories within bounded depth and entry limits. Setting it to
-the known DayZ log directory reduces API requests. Poll intervals, request timeouts, retry limits,
+`NITRADO_LOG_DIRECTORY` is optional and has no default. When unset, the client performs bounded
+recursive discovery through the API-visible filesystem. It validates every bounded ADM candidate and
+deterministically chooses the newest valid log by parsed `AdminLog started on` time, then safe API
+modification metadata and canonical path. Empty or malformed candidates are rejected. When a directory
+is explicitly configured, discovery remains confined to that exact API path and never escapes it.
+The path shown in Nitrado's web interface may not be the path exposed by the API, so do not copy a web
+path into this variable unless it has been independently verified through the API. Poll intervals,
+request timeouts, retry limits,
 exponential backoff with jitter, discovery bounds, maximum download size, and permitted download
 hosts are configurable in `.env.example`. Keep `NITRADO_DOWNLOAD_HOSTS` restricted to the exact
 Nitrado-owned hosts (or the documented `*.nitrado.net` pattern) used by your service.
@@ -69,12 +76,37 @@ bounded retries. Shutdown aborts active requests before another checkpoint can b
 2. Run `npm install`.
 3. Copy `.env.example` to `.env`.
 4. Put the Discord bot token, Nitrado token, and Nitrado service ID in the host's private environment.
-5. Run `npm run commands:register` once.
-6. Run `npm run dev`.
+5. Run `npm run dev`. Startup registers the guild commands idempotently before connecting Discord.
+
+`npm run commands:register` remains available as a bounded standalone recovery or verification tool;
+normal deployments do not require it.
 
 Set `DATA_DIRECTORY` to a persistent mounted directory in hosted environments. The bot stores its
 state as `exodus-bot.json` inside that directory and maintains recovery files alongside it.
 
 Never commit `.env`, the Discord token, or the Nitrado token.
+
+## Optional Discord feeds
+
+Set any of the following to a Discord channel snowflake to enable that feed; leave it blank to disable
+the feed without affecting ingestion:
+
+- `DISCORD_JOIN_LEAVE_CHANNEL_ID`
+- `DISCORD_PLAYER_COUNT_CHANNEL_ID`
+- `DISCORD_KILLFEED_CHANNEL_ID`
+- `DISCORD_RAID_BUILD_CHANNEL_ID`
+- `DISCORD_BOT_STATUS_CHANNEL_ID`
+- `DISCORD_ADMIN_AUDIT_CHANNEL_ID`
+
+Join/leave and player-count messages use only confirmed ADM formats. Killfeed and raid/build routing
+are reserved but intentionally publish nothing until sanitized, verified log samples define those
+formats. Emotes, private DayZ IDs, coordinates, raw log lines, credentials, URLs, and external response
+bodies are never published. Newly enabled feeds begin after the active ingestion checkpoint, so they
+do not replay historical messages. Pending notifications and delivery IDs persist in `DATA_DIRECTORY`
+and Discord nonce enforcement makes retries idempotent.
+
+`/status` reports safe ingestion state, last successful ingestion time, ignored-line count, candidate
+discovery/evaluation/validation/rejection counts, and a stable internal error code. It never includes
+remote error bodies, paths, IDs, coordinates, or URLs.
 
 For hosted production setup, follow the step-by-step [Railway deployment guide](docs/railway-deployment.md).

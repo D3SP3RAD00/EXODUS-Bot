@@ -213,4 +213,37 @@ describe("AdmIngestor", () => {
     expect(state.openSessionByPlayer[PLAYER_A]).toBeUndefined();
     expect(state.players[PLAYER_A]?.accumulatedPlaytimeMs).toBe(1_200_000);
   });
+
+  it("prevents replay duplicates when the same log rotates to a different source path", async () => {
+    const storage = new MemoryStorage();
+    const ingestor = new AdmIngestor(storage, new NullLogger());
+    const content = log(
+      "2026-09-20T09:55:00",
+      `10:00:00 | Player "ExampleOne" (id=${PLAYER_A}) is connected`,
+      `10:20:00 | Player "ExampleOne" (id=${PLAYER_A}) has been disconnected`
+    );
+    await ingestor.ingest(snapshot("adm:path-before-rotation", content));
+    const replay = await ingestor.ingest(snapshot("adm:path-after-rotation", content));
+
+    expect(replay).toMatchObject({ processedEvents: 0, duplicateEvents: 2 });
+    const state = await storage.read();
+    expect(Object.values(state.sessions)).toHaveLength(1);
+    expect(state.players[PLAYER_A]?.accumulatedPlaytimeMs).toBe(1_200_000);
+  });
+
+  it("stores emote and held item as separate deterministic fields", async () => {
+    const storage = new MemoryStorage();
+    await new AdmIngestor(storage, new NullLogger()).ingest(snapshot("adm:emotes", log(
+      "2026-09-20T09:55:00",
+      `10:00:00 | Player "ExampleOne" (id=${PLAYER_A}) performed EmoteTauntKiss with SyntheticItem`,
+      `10:00:01 | Player "ExampleOne" (id=${PLAYER_A}) performed EmoteSurrender`
+    )));
+
+    const emotes = Object.values((await storage.read()).emotes).sort((left, right) =>
+      left.occurredAt.localeCompare(right.occurredAt)
+    );
+    expect(emotes[0]).toMatchObject({ emote: "EmoteTauntKiss", item: "SyntheticItem" });
+    expect(emotes[1]).toMatchObject({ emote: "EmoteSurrender" });
+    expect(emotes[1]).not.toHaveProperty("item");
+  });
 });

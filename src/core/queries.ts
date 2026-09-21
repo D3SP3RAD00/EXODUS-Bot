@@ -28,14 +28,16 @@ export function formatDuration(milliseconds: number): string {
 
 export function statusMessage(state: BotState): string {
   const online = Object.keys(state.openSessionByPlayer).length;
-  const checkpoints = Object.values(state.checkpoints);
-  const latest = checkpoints.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0];
+  const diagnostics = state.diagnostics;
   return [
     "**!!EXODUS Core Status**",
     `Tracked players: ${Object.keys(state.players).length}`,
     `Online sessions: ${online}`,
-    `ADM sources: ${checkpoints.length}`,
-    `Last ingestion: ${latest?.updatedAt ?? "Waiting for Nitrado adapter connection"}`,
+    `ADM state: ${diagnostics.status}`,
+    `Last successful ingestion: ${diagnostics.lastSuccessfulIngestionAt ?? "None yet"}`,
+    `Parser ignored lines: ${diagnostics.ignoredLineCount}`,
+    `ADM candidates: ${diagnostics.discoveredCandidates} discovered, ${diagnostics.evaluatedCandidates} evaluated, ${diagnostics.validCandidates} valid, ${diagnostics.rejectedCandidates} rejected`,
+    `Last safe error: ${diagnostics.lastSafeErrorCode ?? "None"}`,
   ].join("\n");
 }
 

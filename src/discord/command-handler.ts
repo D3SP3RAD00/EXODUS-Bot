@@ -30,8 +30,9 @@ export class CommandHandler {
     } catch (error) {
       this.logger.error("discord_command_failed", {
         command: interaction.commandName,
-        errorName: error instanceof Error ? error.name : "UnknownError",
-        errorMessage: error instanceof Error ? error.message : String(error),
+        code: error instanceof Error && "code" in error && typeof error.code === "string"
+          ? error.code
+          : "EXODUS_INTERNAL",
       });
       const content = adminErrorMessage(error);
       if (interaction.replied || interaction.deferred) {

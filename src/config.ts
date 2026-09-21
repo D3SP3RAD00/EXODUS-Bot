@@ -3,8 +3,18 @@ import { z } from "zod";
 
 const requiredString = z.string().trim().min(1);
 
-const optionalNonEmptyString = z.preprocess(
-  (value) => value === "" ? undefined : value,
+const discordSnowflake = z.string().regex(/^[1-9]\d{16,19}$/).refine(
+  (value) => BigInt(value) <= 18_446_744_073_709_551_615n,
+  "Must be a valid Discord snowflake."
+);
+
+const optionalDiscordSnowflake = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+  discordSnowflake.optional()
+);
+
+const optionalLogDirectory = z.preprocess(
+  (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
   z.string().min(1).optional()
 );
 
@@ -26,12 +36,18 @@ const integerEnvironment = (minimum: number, maximum?: number) => {
 
 const configSchema = z.object({
   DISCORD_BOT_TOKEN: requiredString,
-  DISCORD_APPLICATION_ID: z.string().regex(/^\d+$/),
-  DISCORD_GUILD_ID: z.string().regex(/^\d+$/),
+  DISCORD_APPLICATION_ID: discordSnowflake,
+  DISCORD_GUILD_ID: discordSnowflake,
+  DISCORD_JOIN_LEAVE_CHANNEL_ID: optionalDiscordSnowflake,
+  DISCORD_PLAYER_COUNT_CHANNEL_ID: optionalDiscordSnowflake,
+  DISCORD_KILLFEED_CHANNEL_ID: optionalDiscordSnowflake,
+  DISCORD_RAID_BUILD_CHANNEL_ID: optionalDiscordSnowflake,
+  DISCORD_BOT_STATUS_CHANNEL_ID: optionalDiscordSnowflake,
+  DISCORD_ADMIN_AUDIT_CHANNEL_ID: optionalDiscordSnowflake,
   DATA_DIRECTORY: requiredString.refine(isAbsolute, "Must be an absolute path."),
   NITRADO_TOKEN: requiredString,
   NITRADO_SERVICE_ID: positiveIntegerString,
-  NITRADO_LOG_DIRECTORY: optionalNonEmptyString,
+  NITRADO_LOG_DIRECTORY: optionalLogDirectory,
   NITRADO_DOWNLOAD_HOSTS: z.string().min(1).default("nitrado.net,*.nitrado.net"),
   NITRADO_MAX_DOWNLOAD_BYTES: integerEnvironment(1).default(16_777_216),
   NITRADO_POLL_INTERVAL_MS: integerEnvironment(5_000).default(60_000),

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { posix } from "node:path";
 
 import type { NitradoAdmFile, NitradoClient } from "../adapters/nitrado-adm-log-adapter.js";
+import type { AdmDiscoveryCounts } from "../adapters/adm-log-source.js";
 import { parseAdminLog } from "../dayz/admin-log.js";
 
 const API_BASE_URL = new URL("https://api.nitrado.net");
@@ -42,12 +43,19 @@ type NitradoFileEntry = {
 };
 
 type ResponseBody = { response: Response; bytes: Uint8Array };
+type AdmCandidate = {
+  path: string;
+  expectedSize: number | undefined;
+  modifiedAt: number | undefined;
+};
+type ValidAdmCandidate = AdmCandidate & { content: string; startedAt: string };
 
 export class NitradoClientError extends Error {
   constructor(
     public readonly code: string,
     message: string,
-    public readonly retryable = false
+    public readonly retryable = false,
+    public discovery?: AdmDiscoveryCounts
   ) {
     super(message);
     this.name = "NitradoClientError";
@@ -171,15 +179,71 @@ export class NitradoReadOnlyClient implements NitradoClient {
   async downloadLatestAdmLog(signal?: AbortSignal): Promise<NitradoAdmFile> {
     this.throwIfAborted(signal);
     await this.verifyService(signal);
-    const newest = await this.findNewestAdmLog(signal);
-    if (newest.size > this.options.maxDownloadBytes) {
-      throw new NitradoClientError("NITRADO_RESPONSE_TOO_LARGE", "The newest ADM log exceeds the configured size limit.");
+    const candidates = await this.findAdmCandidates(signal);
+    const discovery: AdmDiscoveryCounts = {
+      discovered: candidates.length,
+      evaluated: 0,
+      valid: 0,
+      rejected: 0,
+    };
+    if (candidates.length === 0) {
+      throw new NitradoClientError(
+        "NITRADO_ADM_NOT_FOUND",
+        "No ADM log is currently available on the server.",
+        false,
+        discovery
+      );
     }
-    const content = await this.downloadFile(newest.path, newest.size, signal);
+
+    const valid: ValidAdmCandidate[] = [];
+    const rejectedErrors: NitradoClientError[] = [];
+    for (const candidate of candidates.sort(compareAdmMetadata)) {
+      this.throwIfAborted(signal);
+      discovery.evaluated += 1;
+      if (candidate.expectedSize === 0) {
+        discovery.rejected += 1;
+        continue;
+      }
+      if (candidate.expectedSize !== undefined && candidate.expectedSize > this.options.maxDownloadBytes) {
+        discovery.rejected += 1;
+        rejectedErrors.push(new NitradoClientError(
+          "NITRADO_RESPONSE_TOO_LARGE",
+          "An ADM candidate exceeds the configured size limit."
+        ));
+        continue;
+      }
+      try {
+        const content = await this.downloadFile(candidate.path, candidate.expectedSize, signal);
+        const parsed = parseAdminLog(content);
+        valid.push({ ...candidate, content, startedAt: parsed.startedAt });
+        discovery.valid += 1;
+      } catch (error) {
+        if (error instanceof NitradoClientError && isRejectableCandidateError(error.code)) {
+          discovery.rejected += 1;
+          rejectedErrors.push(error);
+          continue;
+        }
+        throw attachDiscovery(error, discovery);
+      }
+    }
+
+    const newest = valid.sort(compareValidAdmCandidates)[0];
+    if (!newest) {
+      if (candidates.length === 1 && rejectedErrors[0]) {
+        throw attachDiscovery(rejectedErrors[0], discovery);
+      }
+      throw new NitradoClientError(
+        "NITRADO_NO_VALID_ADM",
+        "No valid ADM log is currently available on the server.",
+        false,
+        discovery
+      );
+    }
     return {
       id: createHash("sha256").update(newest.path).digest("hex"),
-      content,
+      content: newest.content,
       fetchedAt: this.now().toISOString(),
+      discovery,
     };
   }
 
@@ -223,14 +287,33 @@ export class NitradoReadOnlyClient implements NitradoClient {
     }
   }
 
-  private async findNewestAdmLog(
+  private async findAdmCandidates(
     signal?: AbortSignal
-  ): Promise<Required<Pick<NitradoFileEntry, "path" | "size" | "modified_at">>> {
-    const queue: Array<{ directory?: string; depth: number; root?: string }> = this.logDirectory
-      ? [{ directory: this.logDirectory, depth: 0, root: this.logDirectory }]
-      : [{ depth: 0 }];
+  ): Promise<AdmCandidate[]> {
+    if (this.logDirectory) {
+      const entries = await this.listDirectory(this.logDirectory, signal);
+      if (entries.length > this.options.discoveryMaxEntries) {
+        throw new NitradoClientError(
+          "NITRADO_DISCOVERY_LIMIT",
+          "Nitrado log discovery exceeded the configured entry limit."
+        );
+      }
+      const logs: AdmCandidate[] = [];
+      for (const entry of entries) {
+        const path = canonicalAbsolutePath(entry.path);
+        if (!path || posix.dirname(path) !== this.logDirectory || posix.basename(path) !== entry.name) {
+          throw new NitradoClientError("NITRADO_UNSAFE_PATH", "Nitrado returned a path outside the configured directory.");
+        }
+        if (entry.type === "file" && path.toLowerCase().endsWith(".adm")) {
+          logs.push(toAdmCandidate(path, entry));
+        }
+      }
+      return logs;
+    }
+
+    const queue: Array<{ directory?: string; depth: number; root?: string }> = [{ depth: 0 }];
     const visited = new Set<string>();
-    const logs: Array<Required<Pick<NitradoFileEntry, "path" | "size" | "modified_at">>> = [];
+    const logs: AdmCandidate[] = [];
     let discoveredEntries = 0;
     let queueIndex = 0;
 
@@ -258,23 +341,13 @@ export class NitradoReadOnlyClient implements NitradoClient {
         const root = current.root ?? (entry.type === "dir" ? path : posix.dirname(path));
         if (entry.type === "dir" && current.depth < this.options.discoveryMaxDepth) {
           queue.push({ directory: path, depth: current.depth + 1, root });
-        } else if (
-          entry.type === "file" && path.toLowerCase().endsWith(".adm") &&
-          typeof entry.size === "number" && Number.isSafeInteger(entry.size) && entry.size >= 0 &&
-          typeof entry.modified_at === "number" && Number.isFinite(entry.modified_at)
-        ) {
-          logs.push({ path, size: entry.size, modified_at: entry.modified_at });
+        } else if (entry.type === "file" && path.toLowerCase().endsWith(".adm")) {
+          logs.push(toAdmCandidate(path, entry));
         }
       }
     }
 
-    const newest = logs.sort((left, right) =>
-      right.modified_at - left.modified_at || right.path.localeCompare(left.path)
-    )[0];
-    if (!newest) {
-      throw new NitradoClientError("NITRADO_ADM_NOT_FOUND", "No ADM log is currently available on the server.");
-    }
-    return newest;
+    return logs;
   }
 
   private async listDirectory(directory: string | undefined, signal?: AbortSignal): Promise<NitradoFileEntry[]> {
@@ -309,7 +382,7 @@ export class NitradoReadOnlyClient implements NitradoClient {
     });
   }
 
-  private async downloadFile(path: string, expectedSize: number, signal?: AbortSignal): Promise<string> {
+  private async downloadFile(path: string, expectedSize: number | undefined, signal?: AbortSignal): Promise<string> {
     let lastError: unknown;
     for (let attempt = 0; attempt <= this.options.retryLimit; attempt += 1) {
       this.throwIfAborted(signal);
@@ -324,7 +397,7 @@ export class NitradoReadOnlyClient implements NitradoClient {
     throw lastError;
   }
 
-  private async downloadFileOnce(path: string, expectedSize: number, signal?: AbortSignal): Promise<string> {
+  private async downloadFileOnce(path: string, expectedSize: number | undefined, signal?: AbortSignal): Promise<string> {
     const query = new URLSearchParams({ file: path });
     const payload = await this.requestApiJson(
       "download_ticket",
@@ -362,7 +435,7 @@ export class NitradoReadOnlyClient implements NitradoClient {
     if (contentType === "text/html" || contentType === "application/xhtml+xml") {
       throw new NitradoClientError("NITRADO_INVALID_ADM", "Nitrado returned an invalid ADM download.");
     }
-    if (bytes.byteLength < expectedSize) {
+    if (expectedSize !== undefined && bytes.byteLength < expectedSize) {
       throw new NitradoClientError("NITRADO_PARTIAL_DOWNLOAD", "The ADM log download was incomplete.", true);
     }
     let content: string;
@@ -441,6 +514,12 @@ export class NitradoReadOnlyClient implements NitradoClient {
           throw new NitradoClientError("NITRADO_UNAVAILABLE", "Nitrado is temporarily unavailable.", true);
         }
         if (!response.ok) {
+          if (response.status === 404 && operation === "file_list" && this.logDirectory) {
+            throw new NitradoClientError(
+              "NITRADO_INVALID_DIRECTORY",
+              "The configured Xbox ADM directory is unavailable."
+            );
+          }
           throw new NitradoClientError(
             "NITRADO_REQUEST_FAILED",
             `Nitrado rejected the ${operation} request with HTTP ${response.status}.`
@@ -534,4 +613,34 @@ export class NitradoReadOnlyClient implements NitradoClient {
   private abortedError(): NitradoClientError {
     return new NitradoClientError("NITRADO_ABORTED", "The Nitrado operation was stopped.");
   }
+}
+
+function compareAdmMetadata(left: AdmCandidate, right: AdmCandidate): number {
+  const leftModified = left.modifiedAt ?? Number.NEGATIVE_INFINITY;
+  const rightModified = right.modifiedAt ?? Number.NEGATIVE_INFINITY;
+  if (leftModified !== rightModified) return rightModified > leftModified ? 1 : -1;
+  return left.path.localeCompare(right.path);
+}
+
+function compareValidAdmCandidates(left: ValidAdmCandidate, right: ValidAdmCandidate): number {
+  return right.startedAt.localeCompare(left.startedAt) || compareAdmMetadata(left, right);
+}
+
+function isRejectableCandidateError(code: string): boolean {
+  return code === "NITRADO_INVALID_ADM" || code === "NITRADO_RESPONSE_TOO_LARGE";
+}
+
+function attachDiscovery(error: unknown, discovery: AdmDiscoveryCounts): unknown {
+  if (error instanceof NitradoClientError) error.discovery = { ...discovery };
+  return error;
+}
+
+function toAdmCandidate(path: string, entry: NitradoFileEntry): AdmCandidate {
+  const expectedSize = typeof entry.size === "number" && Number.isSafeInteger(entry.size) && entry.size >= 0
+    ? entry.size
+    : undefined;
+  const modifiedAt = typeof entry.modified_at === "number" && Number.isFinite(entry.modified_at)
+    ? entry.modified_at
+    : undefined;
+  return { path, expectedSize, modifiedAt };
 }

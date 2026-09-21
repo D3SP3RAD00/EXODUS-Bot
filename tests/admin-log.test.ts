@@ -9,6 +9,10 @@ const fixturePath = fileURLToPath(
   new URL("./fixtures/short-session.ADM", import.meta.url)
 );
 const fixture = readFileSync(fixturePath, "utf8");
+const currentXboxFixture = readFileSync(
+  fileURLToPath(new URL("./fixtures/current-xbox.ADM", import.meta.url)),
+  "utf8"
+);
 
 describe("parseAdminLog", () => {
   it("parses deterministic player events from an Xbox ADM log", () => {
@@ -16,12 +20,14 @@ describe("parseAdminLog", () => {
 
     expect(parsed.logDate).toBe("2026-09-19");
     expect(parsed.startedAt).toBe("2026-09-19T13:57:59Z");
-    expect(parsed.events).toHaveLength(6);
+    expect(parsed.events).toHaveLength(8);
     expect(parsed.ignoredLines).toEqual([]);
     expect(parsed.events.map((event) => event.type)).toEqual([
       "player_connecting",
       "player_connected",
+      "player_count",
       "player_snapshot",
+      "player_count",
       "player_snapshot",
       "player_emote",
       "player_disconnected",
@@ -31,7 +37,7 @@ describe("parseAdminLog", () => {
   it("preserves identity, coordinates, and the emote name", () => {
     const parsed = parseAdminLog(fixture);
     const connected = parsed.events[1];
-    const emote = parsed.events[4];
+    const emote = parsed.events.find((event) => event.type === "player_emote");
 
     expect(connected?.playerName).toBe("ExampleSurvivor");
     expect(connected?.playerId).toBe(
@@ -83,5 +89,25 @@ describe("parseAdminLog", () => {
       "2026-09-19T23:59:00Z",
       "2026-09-20T00:01:00Z",
     ]);
+  });
+
+  it("parses the current Xbox player-list and emote formats with optional held items", () => {
+    const parsed = parseAdminLog(currentXboxFixture);
+    expect(parsed.events.map((event) => event.type)).toEqual([
+      "player_connecting",
+      "player_connected",
+      "player_count",
+      "player_snapshot",
+      "player_emote",
+      "player_emote",
+    ]);
+    expect(parsed.events.find((event) => event.type === "player_count")).toMatchObject({ count: 1 });
+    const emotes = parsed.events.filter((event) => event.type === "player_emote");
+    expect(emotes[0]).toMatchObject({
+      emote: "EmoteTauntKiss",
+      item: "SyntheticMapItem",
+    });
+    expect(emotes[1]).toMatchObject({ emote: "EmoteSurrender" });
+    expect(emotes[1]).not.toHaveProperty("item");
   });
 });

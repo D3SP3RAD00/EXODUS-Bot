@@ -4,8 +4,8 @@ import { loadConfig } from "../src/config.js";
 
 const requiredEnvironment = {
   DISCORD_BOT_TOKEN: "placeholder",
-  DISCORD_APPLICATION_ID: "123",
-  DISCORD_GUILD_ID: "456",
+  DISCORD_APPLICATION_ID: "12345678901234567",
+  DISCORD_GUILD_ID: "23456789012345678",
   DATA_DIRECTORY: "/data",
   NITRADO_TOKEN: "placeholder-token",
   NITRADO_SERVICE_ID: "1234567",
@@ -59,5 +59,23 @@ describe("configuration", () => {
       NITRADO_BACKOFF_BASE_MS: "5000",
       NITRADO_BACKOFF_MAX_MS: "1000",
     })).toThrow();
+  });
+
+  it("validates optional feed channels as Discord snowflakes", () => {
+    expect(loadConfig({
+      ...requiredEnvironment,
+      DISCORD_JOIN_LEAVE_CHANNEL_ID: "34567890123456789",
+    }).DISCORD_JOIN_LEAVE_CHANNEL_ID).toBe("34567890123456789");
+    expect(() => loadConfig({
+      ...requiredEnvironment,
+      DISCORD_JOIN_LEAVE_CHANNEL_ID: "not-a-channel",
+    })).toThrow();
+  });
+
+  it("preserves an explicitly configured API-visible log directory", () => {
+    expect(loadConfig({
+      ...requiredEnvironment,
+      NITRADO_LOG_DIRECTORY: "/api-visible/logs",
+    }).NITRADO_LOG_DIRECTORY).toBe("/api-visible/logs");
   });
 });
